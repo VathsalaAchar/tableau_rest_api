@@ -74,7 +74,7 @@ class RESTAPI {
 	/**
 		Login functions 
 	*/
-	protected function _makeLoginPayload(){
+	protected function makeLoginPayload(){
 		$payload = "<tsRequest><credentials name=\"{$this->username}\" password=\"{$this->password}\" ><site contentUrl=\"{$this->site}\" />";
 		if($this->login_as_user_id !== null){
 			$payload .= "<user id=\"{$this->login_as_user_id}\" />";
@@ -86,8 +86,8 @@ class RESTAPI {
 
 	
 	public function signin(){
-		$payload = $this->_makeLoginPayload();
-        $url = $this->_buildApiUrl("auth/signin",'login');
+		$payload = $this->makeLoginPayload();
+        $url = $this->buildApiUrl("auth/signin",'login');
         $this->log($url);
         $api = new REST_XML_REQUEST($url);  
         $api->setXmlRequest($payload);
@@ -104,7 +104,7 @@ class RESTAPI {
 	/*Utility function to build the URL string. Example:
 		https://server/api/2.0/sites/abcd-123-6789/datasources
 	*/
-	protected function _buildApiUrl($call, $login = false){
+	protected function buildApiUrl($call, $login = false){
 
 		//All calls but login and logout require the site
 		if($login == 'login'){
@@ -129,7 +129,7 @@ class RESTAPI {
 	
 	// Baseline method for any request. Append method to base url
 	public function queryResource($url_ending){
-		$api_call = $this->_buildApiUrl("$url_ending");
+		$api_call = $this->buildApiUrl("$url_ending");
 		$this->log($api_call);
 		try{
 			$api = new REST_XML_REQUEST($api_call,$this->token);  
@@ -312,24 +312,11 @@ class RESTAPI {
         return $workbooks_in_project;
    }
    
-	public function getGroupLUIDByName($group_name){
-        $groups = $this->queryResource("groups");
-        // Get the ID for the group that matches on name
-        $group = $groups->xpath("//t:group[@name='$group_name']");			
-        if( count($group) == 1) {
-            $group_uid = $group[0]["id"];
-            $this->log("Group UID: $group_uid");;
-            return $group_uid;
-        }
-        else{
-            throw new Exception("Group Name '$group_name' not found on Tableau Server");
-        }
-	}
-   
+  
    // Can be simplified, do some of this automatically
 	public function saveWorkbookPreview($workbook_id,$workbook_url,$save_path){
 		$full_save_location = $save_path . $workbook_url . ".png";
-		$api_call = $this->_buildApiUrl("workbooks/$workbook_id/previewImage");
+		$api_call = $this->buildApiUrl("workbooks/$workbook_id/previewImage");
         try{
 			$api = new REST_XML_REQUEST($api_call,$this->token);
 			$api->setResponseType('png');
@@ -360,7 +347,7 @@ class RESTAPI {
    */
     
 	// Protected internal method to do an any add request. Returns response which is usually XML
-	protected function _sendAddRequest($url,$request){
+	public function sendAddRequest($url,$request){
         $api = new REST_XML_REQUEST($url,$this->token);
         $api->setXmlRequest($add_request);
         $api->requestFromAPI();
@@ -378,10 +365,10 @@ class RESTAPI {
 		}
 		$add_request = "<tsRequest><user name=\"$username\" siteRole=\"$role\" /></tsRequest>";
 		$this->log($add_request);
-		$url = $this->_buildApiUrl("users");
+		$url = $this->buildApiUrl("users");
 		$this->log($url);
 
-        $new_user = $this->_sendAddRequest($url,$add_request);
+        $new_user = $this->sendAddRequest($url,$add_request);
         return $new_user->user['id'];
    }
 
@@ -390,9 +377,9 @@ class RESTAPI {
 	*/
 	public function addUser($username,$fullname,$site_role = 'Unlicensed', $password = false, $email = false){
 		// Add user_ID first, then update with full name
-		$add_request = "<tsRequest><user name=\"$username\" siteRole=\"$role\" /></tsRequest>";
+		$add_request = "<tsRequest><user name=\"$username\" siteRole=\"$site_role\" /></tsRequest>";
 		$this->log($add_request);
-		$url = $this->_buildApiUrl("users");
+		$url = $this->buildApiUrl("users");
 		$this->log($url);
 		try{
 			$new_user_luid = $this->addUserByUsername($username,$site_role);
@@ -413,9 +400,9 @@ class RESTAPI {
 	public function createGroup($group_name){
 		$add_request = "<tsRequest><group name=\"$group_name\" /></tsRequest>";
 		$this->log($add_request);
-		$url = $this->_buildApiUrl("groups");
+		$url = $this->buildApiUrl("groups");
 		$this->log($url);
-        $new_group = $this->_sendAddRequest($url,$add_request);
+        $new_group = $this->sendAddRequest($url,$add_request);
         return $new_group->group['id'];
 
    }
@@ -425,11 +412,11 @@ class RESTAPI {
 		if ($project_desc !== false){
 		   $add_request .= "description='$project_desc'";
 		}
-		$add_request .= " /><tsRequest>";
+		$add_request .= " /></tsRequest>";
 		$this->log($add_request);
-		$url = $this->_buildApiUrl("projects");
+		$url = $this->buildApiUrl("projects");
 
-        $new_project = $this->_sendAddRequest($url,$add_request);
+        $new_project = $this->sendAddRequest($url,$add_request);
         return $new_project->project["id"];
 	}
 	
@@ -439,9 +426,9 @@ class RESTAPI {
 	}
    
 	public function addUserToGroupByLUID($user_luid,$group_luid){
-		$request = "<tsRequest><user id=\"$user_luid\" /></tsRequest>";
-		$url = $this->_buildApiUrl("groups/$group_luid/users/");
-        $this->_sendAddRequest($url,$request);
+		$add_request = "<tsRequest><user id=\"$user_luid\" /></tsRequest>";
+		$url = $this->buildApiUrl("groups/$group_luid/users/");
+        $this->sendAddRequest($url,$add_request);
 	}
    
    /**
@@ -461,7 +448,7 @@ class RESTAPI {
 
         // Get users on site from API
         $group_luid = $this->getGroupLUIDByName($group_name);
-        $users_q = $this->queryResource("users");
+        $users_q = $this->queryUsers();
         $users = $users_q->user;
         foreach($users as $user){
             $current_site_users[ (string) $user["name"] ] = (string) $user["id"];
@@ -558,7 +545,7 @@ class RESTAPI {
    */
    
 	// Generic internal method for any update request using the PUT verb
-	protected function _sendUpdateRequest($url,$request){
+	public function sendUpdateRequest($url,$request){
         $api = new REST_XML_REQUEST($url,$this->token);
         $api->setXmlRequest($request);
         $api->setHttpVerb('put');
@@ -566,14 +553,14 @@ class RESTAPI {
         return $api->getResponse();
 	}
    
-	public function updateUser($user_uid,$username = false, $role = false, $password = false, $email = false){
+	public function updateUser($user_luid,$full_name = false, $site_role = false, $password = false, $email = false){
 		$update_request = "<tsRequest><user ";
 
 		if( $username !== false){
-			$update_request .= "fullName=\"$username\" ";
+			$update_request .= "fullName=\"$full_name\" ";
 		}
-		if( $role !== false){
-			$update_request .= "siteRole=\"$role\" "; 
+		if( $site_role !== false){
+			$update_request .= "siteRole=\"$site_role\" "; 
 		}
 		if( $email !== false){
 			$update_request .= "email=\"$email\" ";
@@ -583,21 +570,21 @@ class RESTAPI {
 		}
 
 		$update_request .= "/></tsRequest>";
-		$url = $this->_buildApiUrl("users/$user_uid");
+		$url = $this->buildApiUrl("users/$user_luid");
 		$this->log($url);
 
-        return $this->_sendUpdateRequest($url,$updaete_request);
+        return $this->sendUpdateRequest($url,$update_request);
 	}
 
 	public function updateWorkbookPermissionsByLUID($wb_luid,$xml_request){
 		
 	}
 
-	//
-	protected function _sendDeleteRequest($url){
+	// Returns a 1 so you can add if completes successfully
+	public function sendDeleteRequest($url){
         $api = new REST_XML_REQUEST($url,$this->token);
         $api->setHttpVerb('delete');
-        $response = $api->requestFromAPI();
+        $api->requestFromAPI();
         $headers = $api->getLastResponseHeaders();
         if($headers['http_code'] === '204' ){
             $this->log("$user_luid removed successfully from $group_luid");
@@ -610,9 +597,9 @@ class RESTAPI {
 	}
 	
 	public function removeUserFromGroupByLUID($user_luid,$group_luid){
-		$url = $this->_buildApiUrl("groups/$group_luid/users/$user_luid");
+		$url = $this->buildApiUrl("groups/$group_luid/users/$user_luid");
 		$this->log("Removing via DELETE on $url");
-        $this->_sendDeleteRequesT($url);
+        $this->sendDeleteRequest($url);
 	}
 	
 	public function removeUsersFromGroupByGroupName($users_to_remove_array,$group_name){
@@ -645,9 +632,9 @@ class RESTAPI {
    
    // Must know the capability name and mode to delete it
    public function deleteWorkbookCapabilityForGroupByLUID($wb_luid,$group_luid,$capability_name,$capability_mode){
-       $url = $this->_buildApiUrl("workbooks/$wb_uid/permissions/groups/$group_uid/$capability_name/$capability_mode");
+       $url = $this->buildApiUrl("workbooks/$wb_luid/permissions/groups/$group_luid/$capability_name/$capability_mode");
        $this->log("Deleting workbook capability via this URL: $url");
-        $this->_sendDeleteRequest($url);
+       $this->sendDeleteRequest($url);
     }
   
    /**
@@ -668,30 +655,30 @@ class RESTAPI {
             $capabilities_xml .= "<granteeCapabilities> \n";
             $capabilities_xml .= $group->group->asXML() ;
             $capabilities_xml .= "\n<capabilities>\n";
-            $group_id = $group->group["id"];
+            $group_luid = $group->group["id"];
             foreach($group->capabilities->capability as $cap){
                 if( in_array( $cap["name"], $this->workbook_capabilities) ){
                     $capabilities_xml .= $cap->asXML() . "\n"  ;
-                    $capabilities_to_remove[] = array($group_id, $cap["name"] );
+                    $capabilities_to_remove[] = array($group_luid, $cap["name"] );
                 };
             }
             $capabilities_xml .= "\n</capabilities></granteeCapabilities>";
         }
         // Remove all necessary capabilities
         foreach($capabilities_to_remove as $caps){
-            $group_id = $caps[0];
+            $group_luid = $caps[0];
             $capability_name = $caps[1];
             $matching_group = $workbook_permissions->xpath("//t:group[@id='$group_id']/..");
 
             // Get all capabilities that match in name that fall under the group granted
-            $matching_cap = $workbook_permissions->xpath("//t:granteeCapabilities[t:group[@id='$group_id']]/ t:capabilities/t:capability[@name='$capability_name']");
+            $matching_cap = $workbook_permissions->xpath("//t:granteeCapabilities[t:group[@id='$group_luid']]/ t:capabilities/t:capability[@name='$capability_name']");
             if( count($matching_cap) == 1){
                 $capability_mode = $matching_cap[0]["mode"];
-                $this->log("$group_id, $capability_name : $capability_mode will be deleted");
+                $this->log("$group_luid, $capability_name : $capability_mode will be deleted");
                 /*
                     Delete capability
                 */
-                $this->deleteWorkbookCapabilityForGroupUID($workbook_id,$group_id,$capability_name,$capability_mode);
+                $this->deleteWorkbookCapabilityForGroupUID($workbook_luid,$group_luid,$capability_name,$capability_mode);
             }
         }
    
@@ -700,8 +687,8 @@ class RESTAPI {
         $request .= "</permissions></tsRequest>";
         
         $this->log($request);
-        $api_call = $this->_buildApiUrl("workbooks/$workbook_id/permissions");
-        $this->_sendUpdateRequest($api_call,$request);
+        $api_call = $this->buildApiUrl("workbooks/$workbook_id/permissions");
+        $this->sendUpdateRequest($api_call,$request);
    }  
 }
 
@@ -890,6 +877,8 @@ class REST_XML_REQUEST {
             
                }
               
+               // Convert the internal part of the XML response that is not Pagination back into XML text
+               // Then put it back a new XML object
                $new_xml = simplexml_load_string ( $full_xml_obj->asXML() );
               
                foreach($full_xml_obj as $a){
