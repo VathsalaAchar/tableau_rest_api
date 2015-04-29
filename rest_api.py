@@ -365,7 +365,7 @@ class RESTAPI:
         # Check that group_luid exists
         self.query_group_by_luid(group_luid)
         update_request = '<tsRequest><group name="{}" /></tsRequest>'.format(new_group_name)
-        url = self.build_api_url("groups/{}").format(grouP_luid))
+        url = self.build_api_url("groups/{}".format(group_luid))
         self.log(update_request)
         self.log(url)
         return send_update_request(url,update_request)
