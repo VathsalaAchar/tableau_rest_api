@@ -4,7 +4,7 @@ try:
     from urllib.request import urlopen, request
 except:
     # Python 2.x
-    import urllib2
+    import urllib,urllib2
 
 # For parsing XML responses
 
@@ -21,30 +21,29 @@ import math
 class RESTAPI:
 
     '''Defines a class that represents a RESTful connection to Tableau Server.'''
-    def __init__(self, server, username, password, site=""):
+    def __init__(self, server, username, password, site_content_url=""):
         self.__server = server
-        self.__site = site
+        self.__site = site_content_url
         self.__username = username
         self.__password = password
         self.__token = None # Holds the login token from the Sign In call
-        self.__site_id = ""
+        self.__site_luid = ""
         self.__login_as_user_id = None
         self.__last_error = None
-        self.__log_handle = None
+        self.__logger = None
         self.__tableau_namespace = 'http://tableausoftware.com/api'
         self.__datasource_capabilities = ('ChangePermissions','Connect','Delete','ExportXml','Read','Write')
         self.__workbook_capabilities = ('AddComment','ChangeHierarchy','ChangePermissions','Delete','ExportData','ExportImage','ExportXml','Filter','Read','ShareView','ViewComments','ViewUnderlyingData','WebAuthoring','Write')
         self.__site_roles = ('Interactor','Publisher','SiteAdministrator','Unlicensed','UnlicensedWithPublish','Viewer','ViewerWithPublish')
         self.__ns_map = { 't' : 'http://tableausoftware.com/api'}
     
-    def enable_logging(self, filename):
-        lh = open(filename, 'w') 
-        self.__log_handle = lh
+    def enable_logging(self, logger_obj):
+        if isinstance(logger_obj,Logger):      
+            self.__logger = logger_obj
             
-        
     def log(self, l):
-        if self.__log_handle != None:
-            self.__log_handle.write(l + '\n')
+        if self.__logger != None:
+            self.__logger.log(l)
         
     def get_last_error(self):
         self.log(self.__last_error)
@@ -58,20 +57,24 @@ class RESTAPI:
            Pass the username and password of an administrator
            user.
         '''
-        _payload = """<tsRequest><credentials name="%s" password="%s" ><site contentUrl="%s" /></credentials></tsRequest>"""
-        return _payload % (self.__username, self.__password, self.__site)
+        if self.__site == 'default':
+            _payload = """<tsRequest><credentials name="%s" password="%s" ><site /></credentials></tsRequest>"""
+            return _payload % (self.__username, self.__password)
+        else:
+            _payload = """<tsRequest><credentials name="%s" password="%s" ><site contentUrl="%s" /></credentials></tsRequest>"""
+            return _payload % (self.__username, self.__password, self.__site)
 
     def build_api_url(self, call, login = False):
         if login == 'login':
             return self.__server + "/api/2.0/" + call
         else:
-            return self.__server + "/api/2.0/sites/" + self.__site_id + "/" + call
+            return self.__server + "/api/2.0/sites/" + self.__site_luid + "/" + call
 
     def signin(self):
         payload = self.__make_login_payload()
         url = self.build_api_url("auth/signin",'login')
         self.log(url)
-        api = REST_XML_REQUEST(url)
+        api = REST_XML_REQUEST(url, False,self.__logger)
         api.set_xml_request(payload)
         self.log(payload)
         api.request_from_api()
@@ -80,13 +83,13 @@ class RESTAPI:
         credentials_element = xml.xpath('//t:credentials',namespaces=self.__ns_map)
         self.__token = credentials_element[0].get("token")
         self.log("Token is " + self.__token)
-        self.__site_id = credentials_element[0].xpath("//t:site", namespaces=self.__ns_map)[0].get("id")
-        self.log("Site ID is " + self.__site_id)
+        self.__site_luid = credentials_element[0].xpath("//t:site", namespaces=self.__ns_map)[0].get("id")
+        self.log("Site ID is " + self.__site_luid)
     
     def signout(self):
         url = self.build_api_url("auth/signout","login")
         self.log(url)
-        api = REST_XML_REQUEST(url)
+        api = REST_XML_REQUEST(url, False, self.__logger)
         api.set_xml_verb('post')
         api.request_from_api()
         self.log('Signed out successfully')
@@ -101,15 +104,13 @@ class RESTAPI:
     ##
     
     # baseline method for any get request. appends to base url
-    def query_resource(self, url_ending):
-        api_call = self.build_api_url(url_ending)
-        try:
-            api = REST_XML_REQUEST(api_call,self.__token)
-            api.request_from_api()
-            xml = api.get_response().getroot() # return Element rather than ElementTree
-            return xml
-        except Exception as e:
-            self.log(e[0])
+    def query_resource(self, url_ending, login = False):
+        api_call = self.build_api_url(url_ending,login)
+        api = REST_XML_REQUEST(api_call,self.__token,self.__logger)
+        self.log(api_call)
+        api.request_from_api()
+        xml = api.get_response().getroot() # return Element rather than ElementTree
+        return xml
     
     def query_datasources(self):
         return self.query_resource("datasources")
@@ -162,16 +163,62 @@ class RESTAPI:
     # Site queries don't have the site portion of the URL, so login option gets correct format
     def query_sites(self):
         return self.query_resource("sites/",'login')
-
-            
-    def query_site_by_luid(self,luid):
-        return self.query_resource(luid)
-
-    def query_site_by_name(self,name):
-        return self.query_resource(name + "?key=name")
     
-    def query_site_by_content_url(self,content_url):
-        return self.query_resource(content_url + "?key=contentUrl")
+    ### Methods for getting info about the sites, since you can only query a site when you are signed into it
+    # Return list of all site luids
+    def query_all_site_luids(self):
+        sites = self.query_sites()
+        site_luids = []
+        for site in sites:
+            site_luids.append( site.get("id") )
+        return site_luids
+    
+    # Return list of all site contentUrls
+    def query_all_site_content_urls(self):
+        sites = self.query_sites()
+        site_content_urls = []
+        for site in sites:
+            site_content_urls.append( site.get("contentUrl") )
+        return site_content_urls
+    
+    # Return list of all site names
+    def query_all_site_names(self):
+        sites = self.query_sites()
+        site_names = []
+        for site in sites:
+            site_names.append( site.get("name") )
+        return site_names     
+    
+    def query_site_luid_by_site_name(self,site_name):
+        site_names = self.query_all_site_names()
+        site_luids = self.query_all_site_luids()
+        if site_name in site_names:
+            return site_luids[ site_names.index(site_name) ]
+        else:
+            raise NoMatchFoundException("Did not find site with name '" + site_name + "' on the server")
+            
+    def query_site_luid_by_site_content_url(self,site_content_url):
+        site_content_urls = self.query_all_site_content_urls()
+        site_luids = self.query_all_site_luids()
+        if site_name in site_names:
+            return site_luids[ site_content_urls.index(site_content_url) ]
+        else:
+            raise NoMatchFoundException("Did not find site with ContentUrl '" + site_content_url + "' on the server")
+
+    def query_site_content_url_by_site_name(self,site_name):
+        site_names = self.query_all_site_names()
+        site_content_urls = self.query_all_site_content_urls()
+        if site_name in site_names:
+            return site_content_urls[ site_names.index(site_name) ]
+        else:
+            raise NoMatchFoundException("Did not find site with name '" + site_name + "' on the server")
+            
+
+    
+    ### You can only query a site you have logged into this way. Better to use methods that run through query_sites
+    def query_current_site(self):
+        return self.query_resource("sites/" + self.buildApiUrl, 'login')
+
             
     def query_users_by_luid(self,luid):
         return self.query_resource( "users/{}".format(luid) )
@@ -227,9 +274,9 @@ class RESTAPI:
         return self.query_workbook_connections_by_luid(wb_luid)
     
     def send_add_request(self,url,request):
-        api = REST_XML_REQUEST(url,self.__token)
+        api = REST_XML_REQUEST(url,self.__token,self.__logger)
         api.set_xml_request(request)
-        api.request_from_api()
+        api.request_from_api(0) # Zero disables paging, for all non queries
         xml = api.get_response().getroot() # return Element rather than ElementTree
         return xml
         
@@ -291,6 +338,22 @@ class RESTAPI:
         new_project = self.send_add_request(url,add_request)
         return new_project.xpath('//t:project',namespaces=self.__ns_map)[0].get("id")
     
+    # Both SiteName and ContentUrl must be unique to add a site
+    def create_site(self,site_name,content_url,admin_mode = False,user_quota = False, storage_quota = False, disable_subscriptions = False):
+        # Both SiteName and ContentUrl must be unique to add a site
+        site_names = self.query_all_site_names()
+        if site_name in site_names:
+            raise AlreadyExistsException("Site Name '" + site_name + "' already exists on server", site_name)
+        site_content_urls = self.query_all_site_content_urls()
+        if content_url in site_content_urls:
+            raise AlreadyExistsException("Content URL '" + content_url + "' already exists on server", content_url)
+        add_request = self.__build_site_request_xml(site_name,content_url,admin_mode,user_quota,storage_quota,disable_subscriptions)
+        url = self.build_api_url("sites/",'login') # Site actions drop back out of the site ID hierarchy like a login
+        self.log(add_request)
+        self.log(url)
+        new_site = self.send_add_request(url,add_request)
+        return new_site.xpath('//t:site',namespaces=self.__ns_map)[0].get("id")
+    
     def add_user_to_group_by_luid(self,user_luid,group_luid):
         add_request = '<tsRequest><user id="{}" /></tsRequest>'.format(user_luid)
         url = self.build_api_url("groups/{}/users/".format(group_luid))
@@ -298,10 +361,10 @@ class RESTAPI:
         
     ### Update Methods
     def send_update_request(self,url,request):
-        api = REST_XML_REQUEST(url,self.__token)
+        api = REST_XML_REQUEST(url,self.__token,self.__logger)
         api.set_xml_request(request)
         api.set_http_verb('put')
-        api.request_from_api()
+        api.request_from_api(0) # Zero disables paging, for all non queries
         return api.get_response()
         
     def update_user(self,user_luid, full_name = False,site_role = False, password = False, email = False):
@@ -370,6 +433,8 @@ class RESTAPI:
         self.log(url)
         return send_update_request(url,update_request)
     
+    
+    
     def update_project_by_luid(self,project_luid,new_project_name = False, new_project_description = False):
         # Check that project_luid exists
         self.query_project_by_luid(project_luid)
@@ -383,8 +448,32 @@ class RESTAPI:
         self.log(url)
         return send_update_request(url,update_request)
     
-    #Update site has a ton of options
-    #def update_site_by_luid(self,
+    def __build_site_request_xml(self,site_name = False,content_url = False,admin_mode = False,user_quota = False, storage_quota = False, disable_subscriptions = False, state = False):
+        request = '<tsRequest><site '
+        if site_name != False: 
+            request = request + 'name="{}" '.format(site_name)
+        if content_url != False: 
+            request = request + 'contentUrl="{}" '.format(content_url)
+        if admin_mode != False: 
+            request = request + 'adminMode="{}" '.format(admin_mode)
+        if user_quota != False: 
+            request = request + 'userQuota="{}" '.format(user_quota)
+        if state != False: 
+            request = request + 'state="{}" '.format(state)
+        if storage_quota != False: 
+            request = request + 'storageQuota="{}" '.format(storage_quota)
+        if disable_subscriptions != False:
+            request = request + 'disableSubscriptions="{}" '.format(disable_subscriptions)
+        request = request + '/></tsRequest>'
+        return request
+
+    # Can only update the site you are signed into, so take site_luid from the object 
+    def update_current_site(self,site_name = False,content_url = False,admin_mode = False,user_quota = False, storage_quota = False, disable_subscriptions = False, state = False):
+        update_request = self.__build_site_request_xml(site_name,content_url,admin_mode,user_quota,storage_quota,disable_subscriptions, state)
+        url = self.build_api_url("{}".format(self.buildApiUrl) )
+        self.log(update_request)
+        self.log(url)
+        return send_update_request(url,update_request)
     
     # Docs do not list a name update function. Is that true?
     def update_workbook_by_luid(self,workbook_luid,new_project_luid = False,new_owner_luid = False):
@@ -418,10 +507,14 @@ class RESTAPI:
         
     ### Figure out how response comes via http2lib, handle appropriately
     def send_delete_request(self,url):
-        api = REST_XML_REQUEST(url,self.__token)
+        api = REST_XML_REQUEST(url,self.__token,self.__logger)
         api.set_http_verb('delete')
-        api.request_from_api()
-        headers = api.get_last_response_headers()
+        try:
+            api.request_from_api(0) # Zero disables paging, for all non queries
+        except Exception as e:
+            self.log(str(api.get_last_url_request()))
+            self.log( str(api.get_last_response_headers()))
+            raise
         #if headers['http
     
     def delete_datasource_by_luid(self,datasource_luid):
@@ -438,8 +531,9 @@ class RESTAPI:
         self.log("Deleting project via  " + url)
         self.send_delete_request(url)
         
-    def delete_site_by_luid(self):
-        url = this.build_api_url("/{}".format(self.__site_luid) )
+    # Can only delete a site that you have signed into
+    def delete_current_site(self):
+        url = self.build_api_url("sites/{}".format(self.__site_luid),'login' )
         self.log("Deleting site via " + url)
         self.send_delete_request(url)
     
@@ -488,7 +582,7 @@ class RESTAPI:
         
 # Handles all of the actual HTTP calling
 class REST_XML_REQUEST:
-    def __init__ (self, url, token = False):
+    def __init__ (self, url, token = False, logger = None):
         self.__defined_response_types = ('xml','png')
         self.__defined_http_verbs = ('post','get','put','delete')
         self.__base_url = url
@@ -500,12 +594,18 @@ class REST_XML_REQUEST:
         self.__last_response_headers = None
         self.__xml_object = None
         self.__ns_map = { 't' : 'http://tableausoftware.com/api'}
+        self.__logger = logger
+        
         try:
             self.set_http_verb('post')
             self.set_response_type('xml')
         except:
             raise
-    
+             
+    def log(self, l):
+        if self.__logger != None:
+            self.__logger.log(l)
+            
     def set_xml_request(self,xml_request):
         self.__xml_request = xml_request
         return True
@@ -547,8 +647,10 @@ class REST_XML_REQUEST:
     # depending on preference. Must be able to do the verbs listed in self.defined_http_verbs
     # Larger requests require pagination (starting at 1), thus page_number argument can be called.
     def __make_request(self, page_number = 1):
-        url = self.__base_url + "?pageNumber=%s"
-        url = url % (page_number)
+        
+        url = self.__base_url
+        if page_number > 0: 
+            url = url + "?pageNumber={}".format(str(page_number))
         self.__last_url_request = url
         
         # Logic to create correct request
@@ -571,9 +673,9 @@ class REST_XML_REQUEST:
         except: 
             raise
     
-    def request_from_api(self):
+    def request_from_api(self,page_number = 1):
         try:
-            self.__make_request()
+            self.__make_request(page_number)
         except:
             raise
         if self.__response_type == 'xml':
@@ -620,6 +722,19 @@ class REST_XML_REQUEST:
 
                 self.__xml_object = etree.parse(StringIO(combined_xml_string), parser=utf8_parser)           
 
+class Logger:
+    def __init__(self,filename): 
+        try:
+            lh = open(filename, 'w') 
+            self.__log_handle = lh
+        except IOError:
+            print "Error: File '" + filename + "' cannot be opened to write for logging"
+            raise
+
+    def log(self, l):
+        self.__log_handle.write(l + '\n')
+            
+### Exceptions                
 class NoMatchFoundException(Exception):
     def __init__ (self,msg):
         self.msg = msg
@@ -628,3 +743,8 @@ class AlreadyExistsException(Exception):
     def __init__ (self,msg,existing_luid):
         self.msg = msg
         self.existing_luid = existing_luid
+
+# Raised when an action is attempted that requires being signed into that site
+class NotSignedInException(Exception):
+    def __init__(self,msg):
+        self.msg = msg
