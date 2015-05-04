@@ -16,7 +16,7 @@ except ImportError:
 # StringIO helps with lxml UTF8 parsing
 
 from StringIO import StringIO
-import math
+import math, time
     
 class RESTAPI:
 
@@ -99,19 +99,60 @@ class RESTAPI:
         split_url = content_url.split('/')
         return 'views/' + split_url[0] + "/" + split_url[2]
     
-    ##
-    ## Basic Querying / Get Methods
+    ## 
+    ## HTTP "verb" methods
     ##
     
     # baseline method for any get request. appends to base url
     def query_resource(self, url_ending, login = False):
         api_call = self.build_api_url(url_ending,login)
         api = REST_XML_REQUEST(api_call,self.__token,self.__logger)
-        self.log(api_call)
+        self.log("query_resource() results in " + api_call)
         api.request_from_api()
         xml = api.get_response().getroot() # return Element rather than ElementTree
         return xml
+
+    def send_add_request(self,url,request):
+        self.log("Adding via send_add_request() on {}".format(url))
+        self.log("Using this request : {}".format(request))
+        api = REST_XML_REQUEST(url,self.__token,self.__logger)
+        api.set_xml_request(request)
+        api.request_from_api(0) # Zero disables paging, for all non queries
+        xml = api.get_response().getroot() # return Element rather than ElementTree
+        return xml
+
+    def send_update_request(self,url,request):
+        api = REST_XML_REQUEST(url,self.__token,self.__logger)
+        api.set_xml_request(request)
+        api.set_http_verb('put')
+        api.request_from_api(0) # Zero disables paging, for all non queries
+        return api.get_response()
+
+    ### Figure out how response comes via http2lib, handle appropriately
+    def send_delete_request(self,url):
+        api = REST_XML_REQUEST(url,self.__token,self.__logger)
+        api.set_http_verb('delete')
+        try:
+            api.request_from_api(0) # Zero disables paging, for all non queries
+        except Exception as e:
+            self.log(str(api.get_last_url_request()))
+            self.log( str(api.get_last_response_headers()))
+            raise
+        #if headers['http        
     
+    ##
+    ## Basic Querying / Get Methods
+    ##
+
+    # Generic method for XML lists for the "query" actions to name -> id dict
+    def convert_xml_list_to_name_id_dict(self,lxml_obj):
+        dict = {}
+        for element in lxml_obj:
+            id = element.get("id")
+            name = element.get("name")
+            dict[name] = id
+        return dict
+
     def query_datasources(self):
         return self.query_resource("datasources")
     
@@ -129,15 +170,22 @@ class RESTAPI:
     def query_datasource_permissions_by_luid(self,luid):
         return self.query_resource( 'datasources/{}/permissions'.format(luid) )
 
-    
     def query_datasource_permissions_by_name(self,name):
         datasource = self.query_datasource_by_name(name)
         datasource_luid = datasource.get('id')
         return self.query_datasource_permissions_by_luid(datasource_luid)
 
-    
     def query_groups(self):
         return self.query_resource("groups")
+    
+    # No basic verb for querying a single group, so run a query_groups
+    def query_group_by_luid(self,group_luid):
+        groups = self.query_groups()
+        group = groups.xpath('//t:group[@id="{}"]'.format(group_luid),namespaces=self.__ns_map)
+        if len(group) == 1:
+            return group[0]
+        else:
+            raise NoMatchFoundException("No group found with name " + name)    
     
     def query_group_luid_by_name(self,name): 
         groups = self.query_groups()
@@ -147,14 +195,20 @@ class RESTAPI:
         else:
             raise NoMatchFoundException("No group found with name " + name)
 
-    
     def query_projects(self):
         return self.query_resource("projects")
     
     def query_project_by_luid(self,luid):
         return self.query_resource( "projects/{}".format(luid) )
 
-
+    def query_project_luid_by_name(self,name): 
+        projects = self.query_projects()
+        project = groups.xpath('//t:project[@name="{}"]'.format(name),namespaces=self.__ns_map)
+        if len(project) == 1:
+            return project[0].get("id")
+        else:
+            raise NoMatchFoundException("No project found with name " + name)
+        
     def query_project_permissions_by_luid(self,luid):
         return self.query_resource( "projects/{}/permissions".format(luid) )
             
@@ -213,14 +267,11 @@ class RESTAPI:
         else:
             raise NoMatchFoundException("Did not find site with name '" + site_name + "' on the server")
             
-
-    
     ### You can only query a site you have logged into this way. Better to use methods that run through query_sites
     def query_current_site(self):
         return self.query_resource("sites/" + self.buildApiUrl, 'login')
-
             
-    def query_users_by_luid(self,luid):
+    def query_user_by_luid(self,luid):
         return self.query_resource( "users/{}".format(luid) )
     
     def query_users(self):
@@ -246,8 +297,7 @@ class RESTAPI:
 
     def query_workbooks_for_user_by_luid(self,luid):
         return self.query_resource("users/{}/workbooks".format(luid) )
-
-            
+       
     def query_workbook_for_username_by_workbook_name(self,username,wb_name):
         workbooks = self.query_workbooks_by_username(username)
         workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name),namespaces=self.__ns_map)
@@ -257,7 +307,6 @@ class RESTAPI:
         else:
             raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
 
-    
     def query_workbooks_by_username(self,username):
         user_luid = self.query_user_luid_by_username(username)
         return self.query_workbooks_for_user_by_luid(user_luid)
@@ -272,14 +321,11 @@ class RESTAPI:
     def query_workbook_connections_for_username_by_workbook_name(self,username,wb_name):
         wb_luid = self.query_workbook_for_username_by_workbook_name(username,wb_name)
         return self.query_workbook_connections_by_luid(wb_luid)
+
+    ## 
+    ## Create / Add Methods
+    ##
     
-    def send_add_request(self,url,request):
-        api = REST_XML_REQUEST(url,self.__token,self.__logger)
-        api.set_xml_request(request)
-        api.request_from_api(0) # Zero disables paging, for all non queries
-        xml = api.get_response().getroot() # return Element rather than ElementTree
-        return xml
-        
     def add_user_by_username(self,username, site_role = 'Unlicensed'):
         # Check to make sure role that is passed is a valid role in the API
         try:
@@ -304,7 +350,7 @@ class RESTAPI:
         except:
             raise
 
-    # This is "Add User to Site"
+    # This is "Add User to Site", since you must be logged into a site
     def add_user(self,username,fullname,site_role = 'Unlicensed', password = False, email = False):
         # Add username first, then update with full name
         add_request = '<tsRequest><user name="{}" siteRole="{}" /></tsRequest>'.format(username,site_role)
@@ -312,24 +358,24 @@ class RESTAPI:
         url = self.build_api_url('users')
         self.log(url)
         try:
-            new_user_luid = self.add_user_by_username
-            return self.update_user(new_user_luid,fullname,password,email)
+            new_user_luid = self.add_user_by_username(username)
+            self.update_user(new_user_luid,fullname,password,email)
+            return new_user_luid
         except AlreadyExistsException as e:
             self.log("Username " + username + " already exists on the server with luid " + e.existing_luid)
             return e.existing_luid
            # return self.update_user(new_user_luid,fullname,password,email)
 
-           
     def create_group(self,group_name):
         add_request = '<tsRequest><group name="{}" /></tsRequest>'.format(group_name)
         self.log(add_request)
         url = self.build_api_url("groups")
         self.log(url)
-        new_group = send_add_request(url,add_request)
+        new_group = self.send_add_request(url,add_request)
         return new_group.xpath('//t:group',namespaces=self.__ns_map)[0].get("id")
         
     def create_project(self,project_name, project_desc = False):
-        add_request = '<tsRequest><project name="${}" '.format(project_name)
+        add_request = '<tsRequest><project name="{}" '.format(project_name)
         if project_desc != False:
             add_request = add_request + 'description="{}"'.format(project_desc)
         add_request = add_request + " /></tsRequest>"
@@ -354,19 +400,40 @@ class RESTAPI:
         new_site = self.send_add_request(url,add_request)
         return new_site.xpath('//t:site',namespaces=self.__ns_map)[0].get("id")
     
-    def add_user_to_group_by_luid(self,user_luid,group_luid):
-        add_request = '<tsRequest><user id="{}" /></tsRequest>'.format(user_luid)
-        url = self.build_api_url("groups/{}/users/".format(group_luid))
-        self.send_add_request(url,add_request)
-        
-    ### Update Methods
-    def send_update_request(self,url,request):
-        api = REST_XML_REQUEST(url,self.__token,self.__logger)
-        api.set_xml_request(request)
-        api.set_http_verb('put')
-        api.request_from_api(0) # Zero disables paging, for all non queries
-        return api.get_response()
-        
+    # Take a single user_luid string or a collection of luid_strings
+    def add_users_to_group_by_luid(self,user_luid_s,group_luid):
+        # Check that group exists and IS NOT "All Users", which cannot be added to
+        try:
+            self.log("Getting group name for {}".format(group_luid))
+            group = self.query_group_by_luid(group_luid)
+            self.log("Name for {} is {}".format(group_luid,group.get("name")) )
+        except:
+            raise NoMatchFoundException("Group {} does not exist on server".format(group_luid))
+          
+        if group.get("name") != 'All Users':
+            # Check that user_luid exists
+            try:
+                # Test for str vs. collection
+                if isinstance(user_luid_s, (str, unicode)):
+                    user_luids = [user_luid_s] # Make single into a collection
+                else: 
+                    user_luids = user_luid_s
+                for user_luid in user_luids:
+                    self.query_user_by_luid(user_luid)
+                    add_request = '<tsRequest><user id="{}" /></tsRequest>'.format(user_luid)
+                    self.log(add_request)
+                    url = self.build_api_url("groups/{}/users/".format(group_luid))
+                    self.log(url)
+                    self.send_add_request(url,add_request)
+            except:
+                raise NoMatchFoundException("User {} does not exist on server".format(user_luid))
+        else:
+            self.log("Skipping add action to 'All Users' group")
+    
+    ##    
+    ## Update Methods
+    ##
+    
     def update_user(self,user_luid, full_name = False,site_role = False, password = False, email = False):
         # Check if user_luid exists
         self.query_user_by_luid(user_luid)
@@ -423,7 +490,8 @@ class RESTAPI:
         self.log(update_request)
         self.log(url)
         return self.send_update_request(url,update_request)
-        
+    
+    # Local Authentication update group
     def update_group_by_luid(self,group_luid,new_group_name):
         # Check that group_luid exists
         self.query_group_by_luid(group_luid)
@@ -433,7 +501,20 @@ class RESTAPI:
         self.log(url)
         return send_update_request(url,update_request)
     
-    
+    # AD group sync. Must specify the domain and the default site role for imported users
+    def sync_ad_group_by_luid(self,group_luid,ad_group_name,ad_domain,default_site_role,sync_as_background = 'true'):
+        if sync_as_background not in ['true','false']:
+            raise InvalidOption("'{}' is not a valid option for sync_as_background. Use 'true' or 'false'".format(sync_as_background))
+        if default_site_role not in self.__site_roles:
+            raise InvalidOption("'{}' is not a valid site role in Tableau".format(default_site_role))
+        # Check that the group exists
+        self.query_group_by_luid(group_luid)
+        update_request = '<tsRequest><group name="{}"><import source="ActiveDirectory" domainName="{}" siteRole="{}" /></group></tsRequest>'.format(ad_group_name,ad_domain,default_site_role)
+        url = self.build_api_url("groups/{}".format(group_luid) + "?asJob={}".format(sync_as_background) )
+        self.log(update_request)
+        self.log(url)
+        return send_update_request(url,update_request)
+        
     
     def update_project_by_luid(self,project_luid,new_project_name = False, new_project_description = False):
         # Check that project_luid exists
@@ -447,6 +528,10 @@ class RESTAPI:
         self.log(update_request)
         self.log(url)
         return send_update_request(url,update_request)
+    
+    def update_project_by_name(self,project_name, new_project_name = False, new_project_description = False):
+        project_luid = query_project_luid_by_name(project_name)
+        return update_project_by_luid(project_luid,new_project_name,new_project_description)
     
     def __build_site_request_xml(self,site_name = False,content_url = False,admin_mode = False,user_quota = False, storage_quota = False, disable_subscriptions = False, state = False):
         request = '<tsRequest><site '
@@ -505,31 +590,34 @@ class RESTAPI:
         self.log(url)
         return self.send_update_request(url,update_request)   
         
-    ### Figure out how response comes via http2lib, handle appropriately
-    def send_delete_request(self,url):
-        api = REST_XML_REQUEST(url,self.__token,self.__logger)
-        api.set_http_verb('delete')
-        try:
-            api.request_from_api(0) # Zero disables paging, for all non queries
-        except Exception as e:
-            self.log(str(api.get_last_url_request()))
-            self.log( str(api.get_last_response_headers()))
-            raise
-        #if headers['http
+    ##
+    ## Delete methods
+    ##
     
-    def delete_datasource_by_luid(self,datasource_luid):
-        # Check if datasource_luid exists
-        self.query_datasource_by_luid(datasource_luid)
-        url = this.build_api_url("datasources/{}".format(datasource_luid))
-        self.log("Deleting datasource via  " + url)
-        self.send_delete_request(url)
+    # Can take collection or luid_string        
+    def delete_datasources_by_luid(self,datasource_luid_s):
+        if isinstance(datasource_luid_s, (str, unicode)):
+            datasource_luids = [datasource_luid_s] # Make single into a collection
+        else: 
+            datasource_luids = datasource_luid_s
+        for datasource_luid in datasource_luids:
+            # Check if datasource_luid exists
+            self.query_datasource_by_luid(datasource_luid)
+            url = self.build_api_url("datasources/{}".format(datasource_luid))
+            self.log("Deleting datasource via  " + url)
+            self.send_delete_request(url)
         
-    def delete_project_by_luid(self,project_luid):
-        # Check if project_luid exists
-        self.query_project_by_luid(project_luid)
-        url = this.build_api_url("projects/{}".format(project_luid))
-        self.log("Deleting project via  " + url)
-        self.send_delete_request(url)
+    def delete_projects_by_luid(self,project_luid_s):
+        if isinstance(project_luid_s, (str, unicode)):
+            project_luids = [project_luid_s] # Make single into a collection
+        else: 
+            project_luids = project_luid_s
+        for project_luid in project_luids:
+            # Check if project_luid exists
+            self.query_project_by_luid(project_luid)
+            url = self.build_api_url("projects/{}".format(project_luid))
+            self.log("Deleting project via  " + url)
+            self.send_delete_request(url)
         
     # Can only delete a site that you have signed into
     def delete_current_site(self):
@@ -537,35 +625,63 @@ class RESTAPI:
         self.log("Deleting site via " + url)
         self.send_delete_request(url)
     
-    def delete_workbook_by_luid(self,wb_luid):
+    # Can take collection or luid_string
+    def delete_workbooks_by_luid(self,wb_luid_s):
+        if isinstance(wb_luid_s, (str, unicode)):
+            wb_luids = [wb_luid_s] # Make single into a collection
+        else: 
+            wb_luids = wb_luid_s
+        for wb_luid in wb_luids:
+            # Check if workbook_luid exists
+            self.query_workbook_by_luid(wb_luid)
+            url = self.build_api_url("workbooks/{}".format(wb_luid))
+            self.log("Deleting workbook via " + url)
+            self.send_delete_request(url)
+    
+    # Can take collection or luid_string
+    def delete_workbooks_from_user_favorites_by_luid(self,wb_luid_s,user_luid):
+        # Check if users exist
+        self.query_user_by_luid(user_luid)
         # Check if workbook_luid exists
-        self.query_workbook_by_luid(wb_luid)
-        url = this.build_api_url("workbooks/{}".format(wb_luid))
-        self.log("Deleting workbook via " + url)
-        self.send_delete_request(url)
+        if isinstance(wb_luid_s, (str, unicode)):
+            wb_luids = [wb_luid_s] # Make single into a collection
+        else: 
+            wb_luids = wb_luid_s
+        for wb_luid in wb_luids:
+            # Check if workbook_luid exists
+            self.query_workbook_by_luid(wb_luid)
+            url = self.build_api_url("favorites/{}/workbooks/{}".format(user_luid,wb_luid))
+            self.log("Removing workbook from favorites via " + url)
+            self.send_delete_request(url)
     
-    def delete_workbook_from_user_favorites_by_luid(self,wb_luid,user_luid):
-        # Check if user and workbook exist
-        self.query_workbook_by_luid(wb_luid)
-        self.query_user_by_luid(user_luid)
-        url = this.build_api_url("favorites/{}/workbooks/{}".format(user_luid,wb_luid))
-        self.log("Removing workbook from favorites via " + url)
-        self.send_delete_erequest(url)
-    
-    def remove_user_from_group_by_luid(self,user_luid,group_luid):
+    # Can take collection or string user_luid string
+    def remove_users_from_group_by_luid(self,user_luid_s,group_luid):
         # Check if user and group luids exist
-        self.query_user_by_luid(user_luid)
         self.query_group_by_luid(group_luid)
-        url = this.build_api_url("groups/{}/users/{}".format(user_luid,group_luid))
-        self.log("Removing user from group via DELETE on " + url)
-        self.send_delete_request(url)
-    
-    def remove_user_from_site_by_luid(self,user_luid):
+          
         # Check if user_luid exists
-        self.query_user_by_luid(user_luid)
-        url = this.build_api_url("users/{}".format(user_luid))
-        self.log("Removing user from site via DELETE on " + url)
-        self.send_delete_request(url)
+        if isinstance(user_luid_s, (str, unicode)):
+            user_luids = [user_luid_s] # Make single into a collection
+        else: 
+            user_luids = user_luid_s
+        for user_luid in user_luids:
+            self.query_user_by_luid(user_luid)
+            url = self.build_api_url("groups/{}/users/{}".format(user_luid,group_luid))
+            self.log("Removing user from group via DELETE on " + url)
+            self.send_delete_request(url)
+    
+    # Can take collection or single user_luid string
+    def remove_users_from_site_by_luid(self,user_luid_s):
+        # Check if user_luid exists
+        if isinstance(user_luid_s, (str, unicode)):
+            user_luids = [user_luid_s] # Make single into a collection
+        else: 
+            user_luids = user_luid_s
+        for user_luid in user_luids:
+            self.query_user_by_luid(user_luid)
+            url = self.build_api_url("users/{}".format(user_luid))
+            self.log("Removing user from site via DELETE on " + url)
+            self.send_delete_request(url)
     
     ### Permissions delete -- this is "Delete Workbook Permissions" for users or groups
     def delete_workbook_capability_for_user_by_luid(self,wb_luid,user_luid,capability_name,capability_mode):
@@ -638,6 +754,7 @@ class REST_XML_REQUEST:
         
     def get_response(self):
         if self.__response_type == 'xml' and self.__xml_object != None:
+            self.log("XML Object Response: " + etree.tostring(self.__xml_object, pretty_print=True))
             return self.__xml_object
         else:
             return self.__raw_response
@@ -668,9 +785,21 @@ class REST_XML_REQUEST:
         
         #Need to handle binary return for image somehow
         try:
+            self.log("Making REST request to Tableau Server using {}".format(self.__http_verb))
+            self.log("Request URI: {}".format(url))
+            if self.__xml_request != None:
+                self.log("Request XML:\n{}".format(self.__xml_request) )
             response = opener.open(request)
             self.__raw_response = response.read() # Leave the UTF8 decoding to lxml
-        except: 
+            self.log("Raw Response:\n{}".format(str(self.__raw_response)))
+        except urllib2.HTTPError as e:
+            self.log(str(e.code))
+            self.log(str(e.reason))
+            self.log(str(e.msg))
+            self.log(str(e.hdrs))
+            self.log(str(e.fp)) 
+            raise
+        except:
             raise
     
     def request_from_api(self,page_number = 1):
@@ -732,7 +861,8 @@ class Logger:
             raise
 
     def log(self, l):
-        self.__log_handle.write(l + '\n')
+        cur_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime() )
+        self.__log_handle.write( '{}: {} \n'.format(cur_time, str(l)) )
             
 ### Exceptions                
 class NoMatchFoundException(Exception):
@@ -746,5 +876,10 @@ class AlreadyExistsException(Exception):
 
 # Raised when an action is attempted that requires being signed into that site
 class NotSignedInException(Exception):
+    def __init__(self,msg):
+        self.msg = msg
+
+# Raise when something an option is passed that is not valid in the REST API (site_role, permissions name, etc)
+class InvalidOption(Exception):
     def __init__(self,msg):
         self.msg = msg
