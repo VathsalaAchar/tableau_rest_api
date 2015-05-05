@@ -16,7 +16,7 @@ except ImportError:
 # StringIO helps with lxml UTF8 parsing
 
 from StringIO import StringIO
-import math, time
+import math, time, random, string, os
     
 class RESTAPI:
 
@@ -140,6 +140,14 @@ class RESTAPI:
             raise
         #if headers['http        
     
+    def send_publish_request(self,url,request,boundary_string):
+        api = REST_XML_REQUEST(url, self.__token,self.__logger)
+        api.set_publish_content(request,boundary_string)
+        api.set_http_verb('post')
+        api.request_from_api(0)
+        xml = api.get_response().getroot() # return Element rather than ElementTree
+        return xml
+    
     ##
     ## Basic Querying / Get Methods
     ##
@@ -185,7 +193,7 @@ class RESTAPI:
         if len(group) == 1:
             return group[0]
         else:
-            raise NoMatchFoundException("No group found with name " + name)    
+            raise NoMatchFoundException("No group found with luid " + group_luid)    
     
     def query_group_luid_by_name(self,name): 
         groups = self.query_groups()
@@ -199,11 +207,16 @@ class RESTAPI:
         return self.query_resource("projects")
     
     def query_project_by_luid(self,luid):
-        return self.query_resource( "projects/{}".format(luid) )
+        projects = self.query_projects()
+        project = projects.xpath('//t:project[@id="{}"]'.format(luid),namespaces=self.__ns_map)
+        if len(project) == 1:
+            return project[0]
+        else:
+            raise NoMatchFoundException("No project found with luid " + luid)
 
     def query_project_luid_by_name(self,name): 
         projects = self.query_projects()
-        project = groups.xpath('//t:project[@name="{}"]'.format(name),namespaces=self.__ns_map)
+        project = projects.xpath('//t:project[@name="{}"]'.format(name),namespaces=self.__ns_map)
         if len(project) == 1:
             return project[0].get("id")
         else:
@@ -693,8 +706,63 @@ class RESTAPI:
         url = self.build_api_url("workbooks/{}/permissions/groups/{}/{}/{}".format(wb_luid,group_luid,capability_name,capability_mode))
         self.log("Deleting workbook capability via this URL: " + url)
         self.__send_delete_request(url)
-        
+    
+    ##
     ### Publish methods -- workbook, datasources, file upload
+    ##
+    
+    ''' Publish process can go two way: 
+        (1) Initiate File Upload (2) Publish workbook/datasource (less than 64MB) 
+        (1) Initiate File Upload (2) Append to File Upload (3) Publish workbook to commit (over 64 MB)
+    '''
+    
+    # You must generate a boundary string that is used both in the headers and the generated request that you post.
+    # This builds a simple 30 hex digit string
+    def generate_boundary_string(self):
+        random_digits = [random.SystemRandom().choice('0123456789abcdef') for n in xrange(30)]
+        str = "".join(random_digits)
+        return str
+    
+    # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
+    def publish_workbook(self,workbook_filename,workbook_name,project_luid,overwrite = False,connection_username = None,connection_password = None,save_credentials = True):
+        # Check if project_luid exists
+        self.query_project_by_luid(project_luid)
+        
+        # Open the file to be uploaded
+        try: 
+            workbook_file = open(workbook_filename, 'rb') 
+            file_size = os.path.getsize(workbook_filename)
+            file_size_mb = float(file_size) / float(1000000) 
+            self.log("File {} is size {} MBs".format(workbook_filename,file_size_mb) ) 
+        except IOError:
+            print "Error: File '" + workbook_filename + "' cannot be opened to upload"
+            raise
+        
+        # Request type is mixed and require a boundary
+        boundary_string = self.generate_boundary_string()
+        
+        # Create the initial XML portion of the request
+        publish_request = "--{}\n".format(boundary_string)
+        publish_request = publish_request + 'Content-Disposition: name="request_payload"\n'
+        publish_request = publish_request + 'Content-Type: text/xml\n\n'
+        publish_request = publish_request + '<tsRequest>\n<workbook name="{}">\n'.format(workbook_name)
+        if connection_username != None and connection_password != None:
+            publish_request = publish_request + '<connectionCredentials name="{}" password="{}" embed="{}" />\n'.format(connection_username,connection_password,str(save_credentials).lower())
+        publish_request = publish_request + '<project id="{}" />\n'.format(project_luid)
+        publish_request = publish_request + "</workbook></tsRequest>\n"
+        publish_request = publish_request + "--{}\n".format(boundary_string)
+        
+        # Upload as single if less than 10 MB
+        if file_size_mb <= 10:  
+            # If part of a single upload, this if the next portion
+            publish_request = publish_request + 'Content-Disposition: name="tableau_workbook"; filename="{}"\n'.format(workbook_filename)
+            publish_request = publish_request + 'Content-Type: application/octet-stream\n\n'
+            
+            #publish_request = publish_request + workbook_file.read()
+            
+            publish_request = publish_request + "\n\n--{}".format(boundary_string)
+            url = self.build_api_url("workbooks") + "?overwrite={}".format( str(overwrite).lower() )
+            self.send_publish_request(url,publish_request,boundary_string)
         
 # Handles all of the actual HTTP calling
 class REST_XML_REQUEST:
@@ -711,6 +779,9 @@ class REST_XML_REQUEST:
         self.__xml_object = None
         self.__ns_map = { 't' : 'http://tableausoftware.com/api'}
         self.__logger = logger
+        self.__publish = False
+        self.__boundary_string = None
+        self.__publish_content = None
         
         try:
             self.set_http_verb('post')
@@ -739,7 +810,13 @@ class REST_XML_REQUEST:
             self.__response_type = response_type
         else:
             raise Exception('Response type ' + response_type + ' is not defined in this library')
-            
+    
+    # Must set a boundary string when publishing
+    def set_publish_content(self,content,boundary_string):
+        self.__publish = True
+        self.__boundary_string = boundary_string
+        self.__publish_content = content
+        
     def get_raw_response(self):
         return self.__raw_response
 
@@ -758,7 +835,7 @@ class REST_XML_REQUEST:
             return self.__xml_object
         else:
             return self.__raw_response
-            
+    
     # Internal method to handle all of the http request variations, using given library.
     # Using urllib2 with some modification, you could substitute in Requests or httplib
     # depending on preference. Must be able to do the verbs listed in self.defined_http_verbs
@@ -778,10 +855,14 @@ class REST_XML_REQUEST:
         if self.__xml_request != None:
             if self.__http_verb == 'put'  or 'post':
                 request.add_data( self.__xml_request.encode("utf8") )
+        if self.__publish_content != None:
+            request.add_data(self.__publish_content)
         if self.__http_verb == 'put':
             request.get_method = lambda: 'PUT'
         if self.__token != False:
             request.add_header('X-tableau-auth', self.__token)
+        if self.__publish == True:
+            request.add_header('Content-Type', 'multipart/mixed; boundary={}'.format( self.__boundary_string ) )
         
         #Need to handle binary return for image somehow
         try:
