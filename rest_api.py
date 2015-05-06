@@ -76,6 +76,7 @@ class RESTAPI:
         self.log(url)
         api = REST_XML_REQUEST(url, False,self.__logger)
         api.set_xml_request(payload)
+        api.set_http_verb('post')
         self.log(payload)
         api.request_from_api()
         self.log(api.get_raw_response())
@@ -111,6 +112,13 @@ class RESTAPI:
         api.request_from_api()
         xml = api.get_response().getroot() # return Element rather than ElementTree
         return xml
+    
+    def send_post_request(self,url):
+        api = REST_XML_REQUEST(url,self.__token,self.__logger)
+        api.set_http_verb('post')
+        api.request_from_api(0)
+        xml = api.get_response().getroot() # return Element rather than ElementTree
+        return xml
 
     def send_add_request(self,url,request):
         self.log("Adding via send_add_request() on {}".format(url))
@@ -144,6 +152,14 @@ class RESTAPI:
         api = REST_XML_REQUEST(url, self.__token,self.__logger)
         api.set_publish_content(request,boundary_string)
         api.set_http_verb('post')
+        api.request_from_api(0)
+        xml = api.get_response().getroot() # return Element rather than ElementTree
+        return xml
+    
+    def send_append_request(self,url,request,boundary_string):
+        api = REST_XML_REQUEST(url, self.__token,self.__logger)
+        api.set_publish_content(request,boundary_string)
+        api.set_http_verb('put')
         api.request_from_api(0)
         xml = api.get_response().getroot() # return Element rather than ElementTree
         return xml
@@ -725,6 +741,8 @@ class RESTAPI:
     
     # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
     def publish_workbook(self,workbook_filename,workbook_name,project_luid,overwrite = False,connection_username = None,connection_password = None,save_credentials = True):
+        # Single upload limit in MB
+        single_upload_limit = 20
         # Check if project_luid exists
         self.query_project_by_luid(project_luid)
         
@@ -742,27 +760,84 @@ class RESTAPI:
         boundary_string = self.generate_boundary_string()
         
         # Create the initial XML portion of the request
-        publish_request = "--{}\n".format(boundary_string)
-        publish_request = publish_request + 'Content-Disposition: name="request_payload"\n'
-        publish_request = publish_request + 'Content-Type: text/xml\n\n'
-        publish_request = publish_request + '<tsRequest>\n<workbook name="{}">\n'.format(workbook_name)
+        publish_request = "--{}\r\n".format(boundary_string)
+        publish_request = publish_request + 'Content-Disposition: name="request_payload"\r\n'
+        publish_request = publish_request + 'Content-Type: text/xml\r\n\r\n'
+        publish_request = publish_request + '<tsRequest>\n<workbook name="{}">\r\n'.format(workbook_name)
         if connection_username != None and connection_password != None:
-            publish_request = publish_request + '<connectionCredentials name="{}" password="{}" embed="{}" />\n'.format(connection_username,connection_password,str(save_credentials).lower())
-        publish_request = publish_request + '<project id="{}" />\n'.format(project_luid)
-        publish_request = publish_request + "</workbook></tsRequest>\n"
-        publish_request = publish_request + "--{}\n".format(boundary_string)
+            publish_request = publish_request + '<connectionCredentials name="{}" password="{}" embed="{}" />\r\n'.format(connection_username,connection_password,str(save_credentials).lower())
+        publish_request = publish_request + '<project id="{}" />\r\n'.format(project_luid)
+        publish_request = publish_request + "</workbook></tsRequest>\r\n"
+        publish_request = publish_request + "--{}".format(boundary_string)
         
-        # Upload as single if less than 10 MB
-        if file_size_mb <= 10:  
+        if workbook_filename.endswith('.twb'):
+            file_extension = 'twb'
+        elif workbook_filename.endswith('.twbx'):
+            file_extension = 'twbx'
+            
+        # Upload as single if less than file_size_limit MB
+        if file_size_mb <= single_upload_limit:  
             # If part of a single upload, this if the next portion
-            publish_request = publish_request + 'Content-Disposition: name="tableau_workbook"; filename="{}"\n'.format(workbook_filename)
-            publish_request = publish_request + 'Content-Type: application/octet-stream\n\n'
+            self.log("Less than {} MB, uploading as a single call".format(str(single_upload_limit)))
+            publish_request = publish_request + '\r\n'
+            publish_request = publish_request + 'Content-Disposition: name="tableau_workbook"; filename="{}"\r\n'.format(workbook_filename)
+            publish_request = publish_request + 'Content-Type: application/octet-stream\r\n\r\n'
             
-            #publish_request = publish_request + workbook_file.read()
+            workbook_content = workbook_file.read()
+            # Convert utf-8 encoding to regular
+            if file_extension == 'twb':
+                workbook_content = workbook_content.decode('utf-8')
+                
+            publish_request = publish_request + workbook_content
             
-            publish_request = publish_request + "\n\n--{}".format(boundary_string)
+            publish_request = publish_request + "\r\n\r\n--{}--".format(boundary_string)
             url = self.build_api_url("workbooks") + "?overwrite={}".format( str(overwrite).lower() )
             self.send_publish_request(url,publish_request,boundary_string)
+        # Break up into chunks for upload
+        else:
+            self.log("Greater than 10 MB, uploading in chunks")
+            upload_session_id = self.initiate_file_upload()
+            
+            for piece in self.__read_file_in_chunks(workbook_file):
+                test_output_workbook.write(piece)
+                self.log("Appending chunk to upload session {}".format(upload_session_id))
+                self.append_to_file_upload(upload_session_id,piece,workbook_filename)
+            
+            url = self.build_api_url("workbooks") + "?uploadSessionId={}".format(upload_session_id) + "&workbookType={}".format(file_extension) + "&overwrite={}".format( str(overwrite).lower() )
+            publish_request = publish_request + "--" #Need to finish off the last boundary
+            self.log("Finishing the upload with a publish request")
+            self.send_publish_request(url,publish_request,boundary_string)
+            workbook_file.close()
+                
+    # Upload in 10 MB chunks (1024 bytes = KB, * 1024 = MB, * x)
+    def __read_file_in_chunks(self,file_object, chunk_size=(1024*1024*10)):
+        while True:
+            data = file_object.read(chunk_size)
+            if not data:
+                break
+            yield data
+    
+    def initiate_file_upload(self):
+        url = self.build_api_url("fileUploads")
+        xml = self.send_post_request(url)
+        file_upload = xml.xpath('//t:fileUpload',namespaces=self.__ns_map)
+        return file_upload[0].get("uploadSessionId")
+    
+    # Uploads a check to an already started session
+    def append_to_file_upload(self,upload_session_id,content,filename):
+        boundary_string = self.generate_boundary_string()
+        publish_request = "--{}\r\n".format(boundary_string)
+        publish_request = publish_request + 'Content-Disposition: name="request_payload"\r\n'
+        publish_request = publish_request + 'Content-Type: text/xml\r\n\r\n'
+        publish_request = publish_request + "--{}\r\n".format(boundary_string)
+        publish_request = publish_request + 'Content-Disposition: name="tableau_file"; filename="{}"\r\n'.format(filename)
+        publish_request = publish_request + 'Content-Type: application/octet-stream\r\n\r\n'
+        
+        publish_request = publish_request + content
+        
+        publish_request = publish_request + "\r\n--{}--".format(boundary_string)
+        url = self.build_api_url("fileUploads/{}".format(upload_session_id))
+        self.send_append_request(url,publish_request,boundary_string)
         
 # Handles all of the actual HTTP calling
 class REST_XML_REQUEST:
@@ -784,7 +859,7 @@ class REST_XML_REQUEST:
         self.__publish_content = None
         
         try:
-            self.set_http_verb('post')
+            self.set_http_verb('get')
             self.set_response_type('xml')
         except:
             raise
@@ -841,7 +916,7 @@ class REST_XML_REQUEST:
     # depending on preference. Must be able to do the verbs listed in self.defined_http_verbs
     # Larger requests require pagination (starting at 1), thus page_number argument can be called.
     def __make_request(self, page_number = 1):
-        
+        self.log("HTTP verb is {}".format(self.__http_verb))
         url = self.__base_url
         if page_number > 0: 
             url = url + "?pageNumber={}".format(str(page_number))
@@ -852,11 +927,14 @@ class REST_XML_REQUEST:
         request = urllib2.Request(url)
         if self.__http_verb == 'delete':
             request.get_method = lambda: 'DELETE'
-        if self.__xml_request != None:
-            if self.__http_verb == 'put'  or 'post':
+        
+        if self.__http_verb == 'put' or self.__http_verb == 'post':
+            if self.__xml_request != None:
                 request.add_data( self.__xml_request.encode("utf8") )
-        if self.__publish_content != None:
-            request.add_data(self.__publish_content)
+            elif self.__publish_content != None:
+                request.add_data( self.__publish_content)
+            else:
+                request.add_data("")
         if self.__http_verb == 'put':
             request.get_method = lambda: 'PUT'
         if self.__token != False:
