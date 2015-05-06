@@ -739,21 +739,32 @@ class RESTAPI:
         str = "".join(random_digits)
         return str
     
-    # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
     def publish_workbook(self,workbook_filename,workbook_name,project_luid,overwrite = False,connection_username = None,connection_password = None,save_credentials = True):
+        self.publish_content('workbook',workbook_filename,workbook_name,project_luid,overwrite,connection_username,connection_password,save_credentials)
+    
+    def publish_datasource(self,ds_filename,ds_name,project_luid,overwrite = False,connection_username = None,connection_password = None,save_credentials = True):
+        self.publish_content('datasource',ds_filename,ds_name,project_luid,overwrite,connection_username,connection_password,save_credentials)
+    
+    # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
+    def publish_content(self,content_type,content_filename,content_name,project_luid,overwrite = False,connection_username = None,connection_password = None,save_credentials = True):
         # Single upload limit in MB
         single_upload_limit = 20
+        
+        # Must be 'workbook' or 'datasource'
+        if content_type not in ['workbook','datasource']:
+            raise InvalidOption("content_type must be 'workbook' or 'datasource'")
+        
         # Check if project_luid exists
         self.query_project_by_luid(project_luid)
         
         # Open the file to be uploaded
         try: 
-            workbook_file = open(workbook_filename, 'rb') 
-            file_size = os.path.getsize(workbook_filename)
+            content_file = open(content_filename, 'rb') 
+            file_size = os.path.getsize(content_filename)
             file_size_mb = float(file_size) / float(1000000) 
-            self.log("File {} is size {} MBs".format(workbook_filename,file_size_mb) ) 
+            self.log("File {} is size {} MBs".format(content_filename,file_size_mb) ) 
         except IOError:
-            print "Error: File '" + workbook_filename + "' cannot be opened to upload"
+            print "Error: File '" + content_filename + "' cannot be opened to upload"
             raise
         
         # Request type is mixed and require a boundary
@@ -763,51 +774,58 @@ class RESTAPI:
         publish_request = "--{}\r\n".format(boundary_string)
         publish_request = publish_request + 'Content-Disposition: name="request_payload"\r\n'
         publish_request = publish_request + 'Content-Type: text/xml\r\n\r\n'
-        publish_request = publish_request + '<tsRequest>\n<workbook name="{}">\r\n'.format(workbook_name)
+        publish_request = publish_request + '<tsRequest>\n<{} name="{}">\r\n'.format(content_type,content_name)
         if connection_username != None and connection_password != None:
             publish_request = publish_request + '<connectionCredentials name="{}" password="{}" embed="{}" />\r\n'.format(connection_username,connection_password,str(save_credentials).lower())
         publish_request = publish_request + '<project id="{}" />\r\n'.format(project_luid)
-        publish_request = publish_request + "</workbook></tsRequest>\r\n"
+        publish_request = publish_request + "</{}></tsRequest>\r\n".format(content_type)
         publish_request = publish_request + "--{}".format(boundary_string)
         
-        if workbook_filename.endswith('.twb'):
+        if content_filename.endswith('.twb'):
             file_extension = 'twb'
-        elif workbook_filename.endswith('.twbx'):
+        elif content_filename.endswith('.twbx'):
             file_extension = 'twbx'
+        elif content_filename.endswith('.tde'):
+            file_extension = 'tde'
+        elif content_filename.endswith('.tdsx'):
+            file_extension = 'tdsx'
+        elif content_filename.endswith('.twbx'):
+            file_extension = 'tds'
+        else: 
+            raise InvalidOption("File {} does not have an acceptable extension. Should be .twb,.twbx,.tde,.tdsx,.tds".format(content_filename))
             
         # Upload as single if less than file_size_limit MB
         if file_size_mb <= single_upload_limit:  
             # If part of a single upload, this if the next portion
             self.log("Less than {} MB, uploading as a single call".format(str(single_upload_limit)))
             publish_request = publish_request + '\r\n'
-            publish_request = publish_request + 'Content-Disposition: name="tableau_workbook"; filename="{}"\r\n'.format(workbook_filename)
+            publish_request = publish_request + 'Content-Disposition: name="tableau_{}"; filename="{}"\r\n'.format(content_type,content_filename)
             publish_request = publish_request + 'Content-Type: application/octet-stream\r\n\r\n'
             
             workbook_content = workbook_file.read()
             # Convert utf-8 encoding to regular
             if file_extension == 'twb':
-                workbook_content = workbook_content.decode('utf-8')
+                content = content.decode('utf-8')
                 
-            publish_request = publish_request + workbook_content
+            publish_request = publish_request + content
             
             publish_request = publish_request + "\r\n\r\n--{}--".format(boundary_string)
-            url = self.build_api_url("workbooks") + "?overwrite={}".format( str(overwrite).lower() )
+            url = self.build_api_url("{}s").format(content_type) + "?overwrite={}".format( str(overwrite).lower() )
             self.send_publish_request(url,publish_request,boundary_string)
         # Break up into chunks for upload
         else:
             self.log("Greater than 10 MB, uploading in chunks")
             upload_session_id = self.initiate_file_upload()
             
-            for piece in self.__read_file_in_chunks(workbook_file):
-                test_output_workbook.write(piece)
+            for piece in self.__read_file_in_chunks(content_file):
                 self.log("Appending chunk to upload session {}".format(upload_session_id))
-                self.append_to_file_upload(upload_session_id,piece,workbook_filename)
+                self.append_to_file_upload(upload_session_id,piece,content_filename)
             
-            url = self.build_api_url("workbooks") + "?uploadSessionId={}".format(upload_session_id) + "&workbookType={}".format(file_extension) + "&overwrite={}".format( str(overwrite).lower() )
+            url = self.build_api_url("{}s").format(content_type) + "?uploadSessionId={}".format(upload_session_id) + "&{}Type={}".format(content_type,file_extension) + "&overwrite={}".format( str(overwrite).lower() )
             publish_request = publish_request + "--" #Need to finish off the last boundary
             self.log("Finishing the upload with a publish request")
             self.send_publish_request(url,publish_request,boundary_string)
-            workbook_file.close()
+            content_file.close()
                 
     # Upload in 10 MB chunks (1024 bytes = KB, * 1024 = MB, * x)
     def __read_file_in_chunks(self,file_object, chunk_size=(1024*1024*10)):
