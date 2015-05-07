@@ -85,6 +85,14 @@ class TabRestApi:
                 break
             yield data
 
+    # You must generate a boundary string that is used both in the headers and the generated request that you post.
+    # This builds a simple 30 hex digit string
+    @staticmethod
+    def generate_boundary_string():
+        random_digits = [random.SystemRandom().choice('0123456789abcdef') for n in xrange(30)]
+        s = "".join(random_digits)
+        return s
+
     #
     # REST API Helper Methods
     #
@@ -119,36 +127,36 @@ class TabRestApi:
                                  storage_quota=False, disable_subscriptions=False, state=False):
         request = '<tsRequest><site '
         if site_name is not False:
-            request = request + 'name="{}" '.format(site_name)
+            request += 'name="{}" '.format(site_name)
         if content_url is not False:
-            request = request + 'contentUrl="{}" '.format(content_url)
+            request += 'contentUrl="{}" '.format(content_url)
         if admin_mode is not False:
-            request = request + 'adminMode="{}" '.format(admin_mode)
+            request += 'adminMode="{}" '.format(admin_mode)
         if user_quota is not False:
-            request = request + 'userQuota="{}" '.format(user_quota)
+            request += 'userQuota="{}" '.format(user_quota)
         if state is not False:
-            request = request + 'state="{}" '.format(state)
+            request += 'state="{}" '.format(state)
         if storage_quota is not False:
-            request = request + 'storageQuota="{}" '.format(storage_quota)
+            request += 'storageQuota="{}" '.format(storage_quota)
         if disable_subscriptions is not False:
-            request = request + 'disableSubscriptions="{}" '.format(disable_subscriptions)
-        request = request + '/></tsRequest>'
+            request += 'disableSubscriptions="{}" '.format(disable_subscriptions)
+        request += '/></tsRequest>'
         return request
 
-    def __build_connection_update_xml(self, new_server_address=False, new_server_port=False,
+    @staticmethod
+    def __build_connection_update_xml(new_server_address=False, new_server_port=False,
                                       new_connection_username=False, new_connection_password=False):
         update_request = "<tsRequest><connection "
-        if new_server_address != False:
-            update_request = update_request + 'serverAddress="{}" '.format(new_server_address)
-        if new_server_port != False:
-            update_request = update_request + 'serverPort="{}" '.format(new_server_port)
-        if new_connection_username != False:
-            update_request = update_request + 'userName="{}" '.format(new_connection_username)
-        if new_connection_username != False:
-            update_request = update_request + 'password="{}"'.format(new_connection_password)
-        update_request = update_request + "/></tsRequest>"
+        if new_server_address is not False:
+            update_request += 'serverAddress="{}" '.format(new_server_address)
+        if new_server_port is not False:
+            update_request += 'serverPort="{}" '.format(new_server_port)
+        if new_connection_username is not False:
+            update_request += 'userName="{}" '.format(new_connection_username)
+        if new_connection_username is not False:
+            update_request += 'password="{}"'.format(new_connection_password)
+        update_request += "/></tsRequest>"
         return update_request
-
 
     #
     # Sign-in and Sign-out
@@ -342,14 +350,12 @@ class TabRestApi:
 
         # Return list of all site names
 
-
     def query_all_site_names(self):
         sites = self.query_sites()
         site_names = []
         for site in sites:
             site_names.append(site.get("name"))
         return site_names
-
 
     def query_site_luid_by_site_name(self, site_name):
         site_names = self.query_all_site_names()
@@ -419,6 +425,9 @@ class TabRestApi:
         user_luid = self.query_user_luid_by_username(username)
         return self.query_workbooks_for_user_by_luid(user_luid)
 
+    def query_workbook_permissions_by_luid(self, wb_luid):
+        return self.query_resource("")
+
     def query_workbook_permissions_for_username_by_workbook_name(self, username, wb_name):
         wb_luid = self.query_workbook_for_username_by_workbook_name(username, wb_name)
         return self.query_workbook_permissions_by_luid(wb_luid)
@@ -460,9 +469,7 @@ class TabRestApi:
         except:
             raise
 
-            # This is "Add User to Site", since you must be logged into a site
-
-
+    # This is "Add User to Site", since you must be logged into a site
     def add_user(self, username, fullname, site_role='Unlicensed', password=False, email=False):
         # Add username first, then update with full name
         add_request = '<tsRequest><user name="{}" siteRole="{}" /></tsRequest>'.format(username, site_role)
@@ -478,7 +485,6 @@ class TabRestApi:
             return e.existing_luid
             # return self.update_user(new_user_luid,fullname,password,email)
 
-
     def create_group(self, group_name):
         add_request = '<tsRequest><group name="{}" /></tsRequest>'.format(group_name)
         self.log(add_request)
@@ -487,20 +493,17 @@ class TabRestApi:
         new_group = self.send_add_request(url, add_request)
         return new_group.xpath('//t:group', namespaces=self.__ns_map)[0].get("id")
 
-
     def create_project(self, project_name, project_desc=False):
         add_request = '<tsRequest><project name="{}" '.format(project_name)
-        if project_desc != False:
-            add_request = add_request + 'description="{}"'.format(project_desc)
-        add_request = add_request + " /></tsRequest>"
+        if project_desc is not False:
+            add_request += 'description="{}"'.format(project_desc)
+        add_request += " /></tsRequest>"
         self.log(add_request)
         url = self.build_api_url("projects")
         new_project = self.send_add_request(url, add_request)
         return new_project.xpath('//t:project', namespaces=self.__ns_map)[0].get("id")
 
-        # Both SiteName and ContentUrl must be unique to add a site
-
-
+    # Both SiteName and ContentUrl must be unique to add a site
     def create_site(self, site_name, content_url, admin_mode=False, user_quota=False, storage_quota=False,
                     disable_subscriptions=False):
         # Both SiteName and ContentUrl must be unique to add a site
@@ -518,9 +521,7 @@ class TabRestApi:
         new_site = self.send_add_request(url, add_request)
         return new_site.xpath('//t:site', namespaces=self.__ns_map)[0].get("id")
 
-        # Take a single user_luid string or a collection of luid_strings
-
-
+    # Take a single user_luid string or a collection of luid_strings
     def add_users_to_group_by_luid(self, user_luid_s, group_luid):
         # Check that group exists and IS NOT "All Users", which cannot be added to
         try:
@@ -532,7 +533,7 @@ class TabRestApi:
 
         if group.get("name") != 'All Users':
             # Check that user_luid exists
-            try:
+            
                 # Test for str vs. collection
                 if isinstance(user_luid_s, (str, unicode)):
                     user_luids = [user_luid_s]  # Make single into a collection
@@ -544,33 +545,34 @@ class TabRestApi:
                     self.log(add_request)
                     url = self.build_api_url("groups/{}/users/".format(group_luid))
                     self.log(url)
-                    self.send_add_request(url, add_request)
-            except:
-                raise NoMatchFoundException("User {} does not exist on server".format(user_luid))
+                    try:
+                        self.send_add_request(url, add_request)
+                    except:
+                        raise NoMatchFoundException("User {} does not exist on server".format(user_luid))
         else:
             self.log("Skipping add action to 'All Users' group")
 
+    # def add_workbook_permissions(self,)
 
-        # def add_workbook_permissions(self,)
-            #
-            # Update Methods
-            #
+    #
+    # Update Methods
+    #
 
     def update_user(self, user_luid, full_name=False, site_role=False, password=False,
-                            email=False):
+                    email=False):
 
         # Check if user_luid exists
         self.query_user_by_luid(user_luid)
         update_request = "<tsRequest><user "
         if full_name is not False:
-            update_request = update_request + 'fullName="{}" '.format(full_name)
+            update_request += 'fullName="{}" '.format(full_name)
         if site_role is not False:
-            update_request = update_request + 'siteRole="{}" '.format(site_role)
+            update_request += 'siteRole="{}" '.format(site_role)
         if email is not False:
-            update_request = update_request + 'email="{}" '.format(email)
+            update_request += 'email="{}" '.format(email)
         if password is not False:
-            update_request = update_request + 'password="{}" '.format(password)
-        update_request = update_request + "/></tsRequest>"
+            update_request += 'password="{}" '.format(password)
+        update_request += "/></tsRequest>"
         url = self.build_api_url("users/{}".format(user_luid))
         self.log(update_request)
         self.log(url)
@@ -581,14 +583,14 @@ class TabRestApi:
         # Check if datasource_luid exists
         self.query_datasource_by_luid(datasource_luid)
         update_request = "<tsRequest><datasource"
-        if new_datasource_name != False:
+        if new_datasource_name is not False:
             update_request = update_request + ' name="{}" '.format(new_datasource_name)
-        update_request = update_request + ">"  # Complete the tag no matter what
-        if new_project_luid != False:
-            update_request = update_request + '<project id="{}"/>'.format(new_project_luid)
-        if new_owner_luid != False:
-            update_request = update_request + '<owner id="{}"/>'.format(new_owner_luid)
-        update_requeest = update_request + "</datasource></tsRequest?"
+        update_request += ">"  # Complete the tag no matter what
+        if new_project_luid is not False:
+            update_request += '<project id="{}"/>'.format(new_project_luid)
+        if new_owner_luid is not False:
+            update_request += '<owner id="{}"/>'.format(new_owner_luid)
+        update_request += "</datasource></tsRequest?"
         url = self.build_api_url("datasources/{}".format(datasource_luid))
         self.log(update_request)
         self.log(url)
@@ -598,7 +600,8 @@ class TabRestApi:
                                              new_connection_username=False, new_connection_password=False):
         # Check if datasource_luid exists
         self.query_datasource_by_luid(datasource_luid)
-        update_request = self.__build_connection_update_xml(new_server_address, new_server_port, new_connection_username,
+        update_request = self.__build_connection_update_xml(new_server_address, new_server_port,
+                                                            new_connection_username,
                                                             new_connection_password)
         url = self.build_api_url("datasources/{}/connection".format(datasource_luid))
         self.log(update_request)
@@ -637,10 +640,10 @@ class TabRestApi:
         self.query_project_by_luid(project_luid)
         update_request = '<tsRequest><project '
         if new_project_name is not False:
-            update_request = update_request + 'name="{}" '.format(new_project_name)
+            update_request += 'name="{}" '.format(new_project_name)
         if new_project_description is not False:
-            update_request = update_request + 'description="{}"'.format(new_project_description)
-        update_request = update_request + "/><tsRequest>"
+            update_request += 'description="{}"'.format(new_project_description)
+        update_request += "/><tsRequest>"
         self.log(update_request)
         url = self.build_api_url("projects")
         self.log(url)
@@ -656,7 +659,7 @@ class TabRestApi:
                             storage_quota=False, disable_subscriptions=False, state=False):
         update_request = self.__build_site_request_xml(site_name, content_url, admin_mode, user_quota, storage_quota,
                                                        disable_subscriptions, state)
-        url = self.build_api_url("{}".format(self.buildApiUrl))
+        url = self.build_api_url("{}".format(self.__site_luid))
         self.log(update_request)
         self.log(url)
         return self.send_update_request(url, update_request)
@@ -667,28 +670,30 @@ class TabRestApi:
         # Check that workbook exists
         self.query_workbook_by_luid(workbook_luid)
         update_request = "<tsRequest><workbook>"
-        if new_project_luid != False:
+        if new_project_luid is not False:
             # Check if new project_luid exists with query
             self.query_project_by_luid(new_project_luid)
-            update_request = update_request + '<project id="{}" />'.format(new_project_luid)
-        if new_owner_luid != False:
+            update_request += '<project id="{}" />'.format(new_project_luid)
+        if new_owner_luid is not False:
             # Check if new owner_luid exists
             self.query_user_by_luid(new_owner_luid)
-            update_request = update_request + '<owner id="{}" />'.format(new_owner_luid)
-        update_request = update_request + '</workbook></tsRequest>'
+            update_request += '<owner id="{}" />'.format(new_owner_luid)
+        update_request += '</workbook></tsRequest>'
         self.log(update_request)
         url = self.build_api_url("workbooks")
         self.log(url)
         return self.send_update_request(url, update_request)
 
-    # To do this, you need the workbook's connection_luid. Seems to only come from "Query Workbook Connections", which does
-    # not return any names, just types and LUIDs
-    def update_workbook_connection_by_luid(self, wb_luid, connection_luid, new_server_address=False, new_server_port=False,
+    # To do this, you need the workbook's connection_luid. Seems to only come from "Query Workbook Connections",
+    # which does not return any names, just types and LUIDs
+    def update_workbook_connection_by_luid(self, wb_luid, connection_luid, new_server_address=False,
+                                           new_server_port=False,
                                            new_connection_username=False, new_connection_password=False):
         # Check if datasource_luid exists
         self.query_workbook_by_luid(wb_luid)
-        self.query_workbook_connection()
-        update_request = self.__build_connection_update_xml(new_server_address, new_server_port, new_connection_username,
+        self.query_workbook_connection_by_luid(connection_luid)
+        update_request = self.__build_connection_update_xml(new_server_address, new_server_port,
+                                                            new_connection_username,
                                                             new_connection_password)
         url = self.build_api_url("workbooks/{}/connections/{}".format(wb_luid, connection_luid))
         self.log(update_request)
@@ -697,7 +702,6 @@ class TabRestApi:
 
         # Creates a single XML block based on capabilities_dict that is passed in
         # Capabilities dict like { capName : 'Allow', capName : 'Deny'...}
-
 
     def __create_grantee_capabilities_xml(self, capabilities_dict, grantee_luid, grantee_type='group'):
         if grantee_type not in ['group', 'user']:
@@ -712,19 +716,19 @@ class TabRestApi:
             if capabilities_dict[cap] not in ['Allow', 'Deny']:
                 raise InvalidOptionException(
                     "'{}' is not acceptable as a mode, only 'Allow' or 'Deny' work".format(capabilities_dict[cap]))
-            xml = xml + '<capability name="{}" mode="{}" />'.format(cap, capabilities_dict[cap])
-        xml = xml + '</granteeCapabilities>'
+            xml += '<capability name="{}" mode="{}" />'.format(cap, capabilities_dict[cap])
+        xml += '</granteeCapabilities>'
         return xml
 
     # Can take single group_luid or list and will assign the same capabilities to each group sent in
+    def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s, capabilities_dict):
+        return 0
 
+    #
+    # Delete methods
+    #
 
-def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s, capabilities_dict):
-    ##
-    ## Delete methods
-    ##
-
-    # Can take collection or luid_string        
+    # Can take collection or luid_string
     def delete_datasources_by_luid(self, datasource_luid_s):
         if isinstance(datasource_luid_s, (str, unicode)):
             datasource_luids = [datasource_luid_s]  # Make single into a collection
@@ -813,47 +817,40 @@ def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s,
             self.log("Removing user from site via DELETE on " + url)
             self.send_delete_request(url)
 
-    ### Permissions delete -- this is "Delete Workbook Permissions" for users or groups
+    # Permissions delete -- this is "Delete Workbook Permissions" for users or groups
     def delete_workbook_capability_for_user_by_luid(self, wb_luid, user_luid, capability_name, capability_mode):
         url = self.build_api_url(
             "workbooks/{}/permissions/users/{}/{}/{}".format(wb_luid, user_luid, capability_name, capability_mode))
         self.log("Deleting workbook capability via this URL: " + url)
-        self.__send_delete_request(url)
+        self.send_delete_request(url)
 
     def delete_workbook_capability_for_group_by_luid(self, wb_luid, group_luid, capability_name, capability_mode):
         url = self.build_api_url(
             "workbooks/{}/permissions/groups/{}/{}/{}".format(wb_luid, group_luid, capability_name, capability_mode))
         self.log("Deleting workbook capability via this URL: " + url)
-        self.__send_delete_request(url)
+        self.send_delete_request(url)
 
-    ### Permissions delete -- this is "Delete datasource Permissions" for users or groups
+    # Permissions delete -- this is "Delete datasource Permissions" for users or groups
     def delete_datasource_capability_for_user_by_luid(self, ds_luid, user_luid, capability_name, capability_mode):
         url = self.build_api_url(
             "datasources/{}/permissions/users/{}/{}/{}".format(ds_luid, user_luid, capability_name, capability_mode))
         self.log("Deleting datasource capability via this URL: " + url)
-        self.__send_delete_request(url)
+        self.send_delete_request(url)
 
     def delete_datasource_capability_for_group_by_luid(self, ds_luid, group_luid, capability_name, capability_mode):
         url = self.build_api_url(
             "datasources/{}/permissions/groups/{}/{}/{}".format(ds_luid, group_luid, capability_name, capability_mode))
         self.log("Deleting datasource capability via this URL: " + url)
-        self.__send_delete_request(url)
+        self.send_delete_request(url)
 
-    ##
-    ### Publish methods -- workbook, datasources, file upload
-    ##
+    #
+    # Publish methods -- workbook, datasources, file upload
+    #
 
     ''' Publish process can go two way: 
         (1) Initiate File Upload (2) Publish workbook/datasource (less than 64MB) 
         (1) Initiate File Upload (2) Append to File Upload (3) Publish workbook to commit (over 64 MB)
     '''
-
-    # You must generate a boundary string that is used both in the headers and the generated request that you post.
-    # This builds a simple 30 hex digit string
-    def generate_boundary_string(self):
-        random_digits = [random.SystemRandom().choice('0123456789abcdef') for n in xrange(30)]
-        str = "".join(random_digits)
-        return str
 
     def publish_workbook(self, workbook_filename, workbook_name, project_luid, overwrite=False,
                          connection_username=None, connection_password=None, save_credentials=True):
@@ -893,15 +890,15 @@ def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s,
 
         # Create the initial XML portion of the request
         publish_request = "--{}\r\n".format(boundary_string)
-        publish_request = publish_request + 'Content-Disposition: name="request_payload"\r\n'
-        publish_request = publish_request + 'Content-Type: text/xml\r\n\r\n'
-        publish_request = publish_request + '<tsRequest>\n<{} name="{}">\r\n'.format(content_type, content_name)
-        if connection_username != None and connection_password != None:
-            publish_request = publish_request + '<connectionCredentials name="{}" password="{}" embed="{}" />\r\n'.format(
+        publish_request += 'Content-Disposition: name="request_payload"\r\n'
+        publish_request += 'Content-Type: text/xml\r\n\r\n'
+        publish_request += '<tsRequest>\n<{} name="{}">\r\n'.format(content_type, content_name)
+        if connection_username is not None and connection_password is not None:
+            publish_request += '<connectionCredentials name="{}" password="{}" embed="{}" />\r\n'.format(
                 connection_username, connection_password, str(save_credentials).lower())
-        publish_request = publish_request + '<project id="{}" />\r\n'.format(project_luid)
-        publish_request = publish_request + "</{}></tsRequest>\r\n".format(content_type)
-        publish_request = publish_request + "--{}".format(boundary_string)
+        publish_request += '<project id="{}" />\r\n'.format(project_luid)
+        publish_request += "</{}></tsRequest>\r\n".format(content_type)
+        publish_request += "--{}".format(boundary_string)
 
         if content_filename.endswith('.twb'):
             file_extension = 'twb'
@@ -922,19 +919,19 @@ def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s,
         if file_size_mb <= single_upload_limit:
             # If part of a single upload, this if the next portion
             self.log("Less than {} MB, uploading as a single call".format(str(single_upload_limit)))
-            publish_request = publish_request + '\r\n'
-            publish_request = publish_request + 'Content-Disposition: name="tableau_{}"; filename="{}"\r\n'.format(
+            publish_request += '\r\n'
+            publish_request += 'Content-Disposition: name="tableau_{}"; filename="{}"\r\n'.format(
                 content_type, content_filename)
-            publish_request = publish_request + 'Content-Type: application/octet-stream\r\n\r\n'
+            publish_request += 'Content-Type: application/octet-stream\r\n\r\n'
 
             content = content_file.read()
             # Convert utf-8 encoding to regular
             if file_extension == 'twb':
                 content = content.decode('utf-8')
 
-            publish_request = publish_request + content
+            publish_request += content
 
-            publish_request = publish_request + "\r\n\r\n--{}--".format(boundary_string)
+            publish_request += "\r\n\r\n--{}--".format(boundary_string)
             url = self.build_api_url("{}s").format(content_type) + "?overwrite={}".format(str(overwrite).lower())
             self.send_publish_request(url, publish_request, boundary_string)
         # Break up into chunks for upload
@@ -949,7 +946,7 @@ def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s,
             url = self.build_api_url("{}s").format(content_type) + "?uploadSessionId={}".format(
                 upload_session_id) + "&{}Type={}".format(content_type, file_extension) + "&overwrite={}".format(
                 str(overwrite).lower())
-            publish_request = publish_request + "--"  # Need to finish off the last boundary
+            publish_request += "--"  # Need to finish off the last boundary
             self.log("Finishing the upload with a publish request")
             self.send_publish_request(url, publish_request, boundary_string)
             content_file.close()
@@ -964,16 +961,16 @@ def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s,
     def append_to_file_upload(self, upload_session_id, content, filename):
         boundary_string = self.generate_boundary_string()
         publish_request = "--{}\r\n".format(boundary_string)
-        publish_request = publish_request + 'Content-Disposition: name="request_payload"\r\n'
-        publish_request = publish_request + 'Content-Type: text/xml\r\n\r\n'
-        publish_request = publish_request + "--{}\r\n".format(boundary_string)
-        publish_request = publish_request + 'Content-Disposition: name="tableau_file"; filename="{}"\r\n'.format(
+        publish_request += 'Content-Disposition: name="request_payload"\r\n'
+        publish_request += 'Content-Type: text/xml\r\n\r\n'
+        publish_request += "--{}\r\n".format(boundary_string)
+        publish_request += 'Content-Disposition: name="tableau_file"; filename="{}"\r\n'.format(
             filename)
-        publish_request = publish_request + 'Content-Type: application/octet-stream\r\n\r\n'
+        publish_request += 'Content-Type: application/octet-stream\r\n\r\n'
 
-        publish_request = publish_request + content
+        publish_request += content
 
-        publish_request = publish_request + "\r\n--{}--".format(boundary_string)
+        publish_request += "\r\n--{}--".format(boundary_string)
         url = self.build_api_url("fileUploads/{}".format(upload_session_id))
         self.send_append_request(url, publish_request, boundary_string)
 
@@ -996,6 +993,8 @@ class RestXmlRequest:
         self.__publish = False
         self.__boundary_string = None
         self.__publish_content = None
+        self.__http_verb = None
+        self.__response_type = None
 
         try:
             self.set_http_verb('get')
@@ -1004,7 +1003,7 @@ class RestXmlRequest:
             raise
 
     def log(self, l):
-        if self.__logger != None:
+        if self.__logger is not None:
             self.__logger.log(l)
 
     def set_xml_request(self, xml_request):
@@ -1044,7 +1043,7 @@ class RestXmlRequest:
         return self.__last_response_headers
 
     def get_response(self):
-        if self.__response_type == 'xml' and self.__xml_object != None:
+        if self.__response_type == 'xml' and self.__xml_object is not None:
             self.log("XML Object Response: " + etree.tostring(self.__xml_object, pretty_print=True))
             return self.__xml_object
         else:
@@ -1068,24 +1067,24 @@ class RestXmlRequest:
             request.get_method = lambda: 'DELETE'
 
         if self.__http_verb == 'put' or self.__http_verb == 'post':
-            if self.__xml_request != None:
+            if self.__xml_request is not None:
                 request.add_data(self.__xml_request.encode("utf8"))
-            elif self.__publish_content != None:
+            elif self.__publish_content is not None:
                 request.add_data(self.__publish_content)
             else:
                 request.add_data("")
         if self.__http_verb == 'put':
             request.get_method = lambda: 'PUT'
-        if self.__token != False:
+        if self.__token is not False:
             request.add_header('X-tableau-auth', self.__token)
-        if self.__publish == True:
+        if self.__publish is True:
             request.add_header('Content-Type', 'multipart/mixed; boundary={}'.format(self.__boundary_string))
 
         # Need to handle binary return for image somehow
         try:
             self.log("Making REST request to Tableau Server using {}".format(self.__http_verb))
             self.log("Request URI: {}".format(url))
-            if self.__xml_request != None:
+            if self.__xml_request is not None:
                 self.log("Request XML:\n{}".format(self.__xml_request))
             response = opener.open(request)
             self.__raw_response = response.read()  # Leave the UTF8 decoding to lxml
@@ -1134,7 +1133,7 @@ class RestXmlRequest:
                 if total_pages > 1:
                     for i in xrange(2, total_pages + 1):
 
-                        response = self.__make_request(i)  # Get next page
+                        self.__make_request(i)  # Get next page
                         xml = etree.parse(StringIO(self.__raw_response), parser=utf8_parser)
                         for obj in xml.getroot():
                             if obj.tag != 'pagination':
@@ -1145,7 +1144,7 @@ class RestXmlRequest:
 
                 for line in xml_text_lines:
                     combined_xml_string = combined_xml_string + line
-                combined_xml_string = combined_xml_string + "</tsResponse>";
+                combined_xml_string += "</tsResponse>"
 
                 self.__xml_object = etree.parse(StringIO(combined_xml_string), parser=utf8_parser)
 
@@ -1164,7 +1163,7 @@ class Logger:
         self.__log_handle.write('{}: {} \n'.format(cur_time, str(l)))
 
 
-### Exceptions                
+# Exceptions
 class NoMatchFoundException(Exception):
     def __init__(self, msg):
         self.msg = msg
