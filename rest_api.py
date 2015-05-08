@@ -255,6 +255,14 @@ class TabRestApi:
         xml = api.get_response().getroot()  # return Element rather than ElementTree
         return xml
 
+    # Used when the result is not going to be XML and you want to save the raw response as binary
+    def send_binary_get_request(self, url):
+        api = RestXmlRequest(url, self.__token, self.__logger)
+        api.set_http_verb('get')
+        api.set_response_type('binary')
+        api.request_from_api(0)
+        return api.get_response()
+
     #
     # Basic Querying / Get Methods
     #
@@ -412,6 +420,10 @@ class TabRestApi:
     def query_workbooks_for_user_by_luid(self, luid):
         return self.query_resource("users/{}/workbooks".format(luid))
 
+    # This uses the logged in username
+    def query_workbooks_by_workbook_name(self, wb_name):
+        return self.query_workbooks_by_username(self.__username)
+
     def query_workbook_for_username_by_workbook_name(self, username, wb_name):
         workbooks = self.query_workbooks_by_username(username)
         workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
@@ -421,25 +433,70 @@ class TabRestApi:
         else:
             raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
 
+    def query_workbook_luid_for_username_by_workbook_name(self, username, wb_name):
+        workbooks = self.query_workbooks_by_username(username)
+        workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
+        if len(workbook) == 1:
+            wb_luid = workbook[0].get("id")
+            return wb_luid
+        else:
+            raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
+
     def query_workbooks_by_username(self, username):
         user_luid = self.query_user_luid_by_username(username)
         return self.query_workbooks_for_user_by_luid(user_luid)
 
+    # Used the logged in username
+    def query_workbook_views_by_workbook_name(self, wb_name, usage=False):
+        wb_luid = self.query_workbook_luid_for_username_by_workbook_name(self.__username, wb_name)
+        return self.query_workbook_views_by_luid(wb_luid, usage)
+
+    # Set Usage to True to get usage with this
+    def query_workbook_views_by_luid(self, wb_luid, usage=False):
+        if usage not in [True, False]:
+            raise InvalidOptionException('Usage can only be set to True or False')
+        # Check workbook luid
+        self.query_workbook_by_luid(wb_luid)
+        return self.query_resource("workbooks/{}/views?includeUsageStatistics={}".format(wb_luid, str(usage).lower()))
+
     def query_workbook_permissions_by_luid(self, wb_luid):
-        return self.query_resource("")
+        return self.query_resource("workbooks/{}/permissions", format(wb_luid))
 
     def query_workbook_permissions_for_username_by_workbook_name(self, username, wb_name):
         wb_luid = self.query_workbook_for_username_by_workbook_name(username, wb_name)
         return self.query_workbook_permissions_by_luid(wb_luid)
 
+    def query_workbook_connections_by_luid(self, wb_luid):
+        # Check the workbook exists
+        self.query_workbook_by_luid(wb_luid)
+        return self.query_resource("workbooks/{}/connections".format(wb_luid))
+
     # Need to figure how to use this to update the connections in a workbook. Seems to return
     # LUIDs for connections and the datatypes, but no way to distinguish them
     # Ask Tyler Doyle?
-
     def query_workbook_connections_for_username_by_workbook_name(self, username, wb_name):
         wb_luid = self.query_workbook_for_username_by_workbook_name(username, wb_name)
         return self.query_workbook_connections_by_luid(wb_luid)
 
+    # INCOMPLETE
+    def save_workbook_view_preview_image_by_luid(self, wb_luid, view_luid, filename):
+        # Check for workbook
+        self.query_workbook_by_luid(wb_luid)
+
+    def save_workbook_preview_image(self, wb_luid, filename):
+        # CHeck for workbook
+        self.query_workbook_by_luid(wb_luid)
+        # Open the file to be saved to
+        try:
+            save_file = open(filename, 'wb')
+            url = self.build_api_url("workbooks/{}/previewImage".format(wb_luid))
+            image = self.send_binary_get_request(url)
+            save_file.write(image)
+            save_file.close()
+
+        except IOError:
+            print "Error: File '" + filename + "' cannot be opened to save to"
+            raise
     #
     # Create / Add Methods
     #
@@ -554,6 +611,38 @@ class TabRestApi:
 
     # def add_workbook_permissions(self,)
 
+    # Tags can be scalar string or list
+    def add_tags_to_workbook_by_luid(self, wb_luid, tag_s):
+        # Check the wb_luid exists
+        self.query_workbook_by_luid(wb_luid)
+        url = self.build_api_url("workbooks/{}/tags".format(wb_luid))
+
+        request = "<tsRequest><tags>"
+        if isinstance(tag_s, (str, unicode)):
+            tags = [tag_s]  # Make single into a collection
+        else:
+            tags = tag_s
+        for tag in tags:
+            request += "<tag label='{}/'>".format(str(tag))
+        request += "</tsRequest>"
+        return self.send_add_request(url, request)
+
+    def add_workbook_to_user_favorites_by_luid(self, favorite_name, wb_luid, user_luid):
+        # Check existence of user
+        self.query_user_by_luid(user_luid)
+        self.query_workbook_by_luid(wb_luid)
+        request = '<tsRequest><favorite label="{}"><workbook id="{}" /></favorite></tsRequest>'.format(favorite_name, wb_luid)
+        url = self.build_api_url("favorites/{}".format(user_luid))
+        return self.send_add_request(url, request)
+
+    def add_view_to_user_favorites_by_luid(self, favorite_name, view_luid, user_luid):
+        # Check existence of user
+        self.query_user_by_luid(user_luid)
+        # self.query_views_by_luid(wb_luid) # Should figured out if view exists here
+        request = '<tsRequest><favorite label="{}"><view id="{}" /></favorite></tsRequest>'.format(favorite_name, view_luid)
+        url = self.build_api_url("favorites/{}".format(user_luid))
+        return self.send_add_request(url, request)
+
     #
     # Update Methods
     #
@@ -618,8 +707,7 @@ class TabRestApi:
         self.log(url)
         return self.send_update_request(url, update_request)
 
-        # AD group sync. Must specify the domain and the default site role for imported users
-
+    # AD group sync. Must specify the domain and the default site role for imported users
     def sync_ad_group_by_luid(self, group_luid, ad_group_name, ad_domain, default_site_role, sync_as_background='true'):
         if sync_as_background not in ['true', 'false']:
             raise InvalidOptionException(
@@ -691,7 +779,7 @@ class TabRestApi:
                                            new_connection_username=False, new_connection_password=False):
         # Check if datasource_luid exists
         self.query_workbook_by_luid(wb_luid)
-        self.query_workbook_connection_by_luid(connection_luid)
+        self.query_workbook_connections_by_luid(connection_luid)
         update_request = self.__build_connection_update_xml(new_server_address, new_server_port,
                                                             new_connection_username,
                                                             new_connection_password)
@@ -788,6 +876,21 @@ class TabRestApi:
             self.log("Removing workbook from favorites via " + url)
             self.send_delete_request(url)
 
+    def delete_views_from_user_favorites_by_luid(self, view_luid_s, user_luid):
+        # Check if users exist
+        self.query_user_by_luid(user_luid)
+        # Check if workbook_luid exists
+        if isinstance(view_luid_s, (str, unicode)):
+            view_luids = [view_luid_s]  # Make single into a collection
+        else:
+            view_luids = view_luid_s
+        for view_luid in view_luids:
+            # Check if workbook_luid exists
+            self.query_workbook_by_luid(view_luid)
+            url = self.build_api_url("favorites/{}/views/{}".format(user_luid, view_luid))
+            self.log("Removing view from favorites via " + url)
+            self.send_delete_request(url)
+
     # Can take collection or string user_luid string
     def remove_users_from_group_by_luid(self, user_luid_s, group_luid):
         # Check if user and group luids exist
@@ -843,6 +946,32 @@ class TabRestApi:
         self.log("Deleting datasource capability via this URL: " + url)
         self.send_delete_request(url)
 
+    # Permissions delete -- this is "Delete Project Permissions" for users or groups
+    def delete_project_capability_for_user_by_luid(self, p_luid, user_luid, capability_name, capability_mode):
+        url = self.build_api_url(
+            "projects/{}/permissions/users/{}/{}/{}".format(p_luid, user_luid, capability_name, capability_mode))
+        self.log("Deleting datasource capability via this URL: " + url)
+        self.send_delete_request(url)
+
+    def delete_project_capability_for_group_by_luid(self, p_luid, group_luid, capability_name, capability_mode):
+        url = self.build_api_url(
+            "projects/{}/permissions/groups/{}/{}/{}".format(p_luid, group_luid, capability_name, capability_mode))
+        self.log("Deleting datasource capability via this URL: " + url)
+        self.send_delete_request(url)
+
+    def delete_tags_from_workbook_by_luid(self, wb_luid, tag_s):
+        # Check wb_luid
+        self.query_workbook_by_luid(wb_luid)
+        if isinstance(tag_s, (str, unicode)):
+            tags = [tag_s]  # Make single into a collection
+        else:
+            tags = tag_s
+
+        deleted_count = 0
+        for tag in tags:
+            url = self.build_api_url("workbooks/{}/tags/{}".format(wb_luid, tag))
+            deleted_count += self.send_delete_request(url)
+        return deleted_count
     #
     # Publish methods -- workbook, datasources, file upload
     #
@@ -978,7 +1107,7 @@ class TabRestApi:
 # Handles all of the actual HTTP calling
 class RestXmlRequest:
     def __init__(self, url, token=False, logger=None):
-        self.__defined_response_types = ('xml', 'png')
+        self.__defined_response_types = ('xml', 'png', 'binary')
         self.__defined_http_verbs = ('post', 'get', 'put', 'delete')
         self.__base_url = url
         self.__xml_request = None
@@ -1113,7 +1242,7 @@ class RestXmlRequest:
             self.__xml_object = xml
             for pagination in xml.xpath('//t:pagination', namespaces=self.__ns_map):
 
-                page_number = int(pagination.get('pageNumber'))
+                # page_number = int(pagination.get('pageNumber'))
                 page_size = int(pagination.get('pageSize'))
                 total_available = int(pagination.get('totalAvailable'))
                 total_pages = int(math.ceil(float(total_available) / float(page_size)))
@@ -1147,6 +1276,8 @@ class RestXmlRequest:
                 combined_xml_string += "</tsResponse>"
 
                 self.__xml_object = etree.parse(StringIO(combined_xml_string), parser=utf8_parser)
+        elif self.__response_type in ['binary', 'png']:
+            self.log('Binary response (binary or png) rather than XML')
 
 
 class Logger:
