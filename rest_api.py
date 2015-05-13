@@ -38,6 +38,7 @@ class TabRestApi:
         self.__site_roles = (
             'Interactor', 'Publisher', 'SiteAdministrator', 'Unlicensed', 'UnlicensedWithPublish', 'Viewer',
             'ViewerWithPublish')
+        self.__permissionable_objects = ['datasource', 'project', 'workbook']
         self.__ns_map = {'t': 'http://tableausoftware.com/api'}
         self.__server_to_rest_capability_map = {'Add Comment': 'AddComment',
                                                 'Move': 'ChangeHierarchy',
@@ -66,7 +67,7 @@ class TabRestApi:
             self.__logger = logger_obj
 
     def log(self, l):
-        if self.__logger is None:
+        if self.__logger is not None:
             self.__logger.log(l)
 
     def get_last_error(self):
@@ -75,6 +76,15 @@ class TabRestApi:
 
     def set_last_error(self, error):
         self.__last_error = error
+
+    # Method to handle single str or list and return a list
+    @staticmethod
+    def to_list(x):
+        if isinstance(x, (str, unicode)):
+            l = [x]  # Make single into a collection
+        else:
+            l = x
+        return l
 
     # Method to read file in x MB chunks for upload, 10 MB by default (1024 bytes = KB, * 1024 = MB, * 10)
     @staticmethod
@@ -158,6 +168,27 @@ class TabRestApi:
         update_request += "/></tsRequest>"
         return update_request
 
+    # Dict { capability_name : mode } into XML with checks for validity. Set type to 'workbook' or 'datasource'
+    def build_capabilities_xml_from_dict(self, capabilities_dict, obj_type):
+        if obj_type not in self.__permissionable_objects:
+            raise InvalidOptionException('objtype can only be "project", "workbook" or "datasource", was given {}'.format('obj_type'))
+        xml = '<capabilities>\n'
+        for cap in capabilities_dict:
+            if capabilities_dict[cap] not in ['Allow', 'Deny']:
+                raise InvalidOptionException('Capability mode can only be "Allow" or "Deny" (case-sensitive)')
+            if obj_type == 'project':
+                if cap not in self.__datasource_capabilities + self.__workbook_capabilities:
+                    raise InvalidOptionException('{} is not a valid capability in the REST API'.format(cap))
+            if obj_type == 'datasource':
+                if cap not in self.__datasource_capabilities:
+                    raise InvalidOptionException('{} is not a valid capability for a datasource'.format(cap))
+            if obj_type == 'workbook':
+                if cap not in self.__workbook_capabilities:
+                    raise InvalidOptionException('{} is not a valid capability for a workbook'.format(cap))
+            xml += '<capability name="{}" mode="{}" />'.format(cap, capabilities_dict[cap])
+        xml += '</capabilities>'
+        return xml
+
     #
     # Sign-in and Sign-out
     #
@@ -234,6 +265,10 @@ class TabRestApi:
         api.set_http_verb('delete')
         try:
             api.request_from_api(0)  # Zero disables paging, for all non queries
+        except RecoverableHTTPException as e:
+            self.log('Recoverable HTTP Exception Response {}, Tableau Code {}'.format(e.http_code, e.tableau_error_code))
+            if e.tableau_error_code in [404003]:
+                self.log('Delete action did not find the resouce. Consider successful, keep going')
         except Exception as e:
             self.log(str(api.get_last_url_request()))
             self.log(str(api.get_last_response_headers()))
@@ -363,6 +398,7 @@ class TabRestApi:
         site_names = []
         for site in sites:
             site_names.append(site.get("name"))
+        self.log(site_names)
         return site_names
 
     def query_site_luid_by_site_name(self, site_name):
@@ -421,7 +457,7 @@ class TabRestApi:
         return self.query_resource("users/{}/workbooks".format(luid))
 
     # This uses the logged in username
-    def query_workbooks_by_workbook_name(self, wb_name):
+    def query_workbooks(self):
         return self.query_workbooks_by_username(self.__username)
 
     def query_workbook_for_username_by_workbook_name(self, username, wb_name):
@@ -561,16 +597,22 @@ class TabRestApi:
         return new_project.xpath('//t:project', namespaces=self.__ns_map)[0].get("id")
 
     # Both SiteName and ContentUrl must be unique to add a site
-    def create_site(self, site_name, content_url, admin_mode=False, user_quota=False, storage_quota=False,
+    def create_site(self, new_site_name, new_content_url, admin_mode=False, user_quota=False, storage_quota=False,
                     disable_subscriptions=False):
         # Both SiteName and ContentUrl must be unique to add a site
+        self.log('Querying all of the site names prior to create')
         site_names = self.query_all_site_names()
-        if site_name in site_names:
-            raise AlreadyExistsException("Site Name '" + site_name + "' already exists on server", site_name)
+        site_names_lc = []
+        self.log('Attempting to create site "{}" with content_url "{}"'.format(new_site_name, new_content_url))
+        for name in site_names:
+            site_names_lc.append(name.lower())
+
+        if new_site_name.lower() in site_names_lc:
+            raise AlreadyExistsException("Site Name '" + new_site_name + "' already exists on server", new_site_name)
         site_content_urls = self.query_all_site_content_urls()
-        if content_url in site_content_urls:
-            raise AlreadyExistsException("Content URL '" + content_url + "' already exists on server", content_url)
-        add_request = self.__build_site_request_xml(site_name, content_url, admin_mode, user_quota, storage_quota,
+        if new_content_url in site_content_urls:
+            raise AlreadyExistsException("Content URL '" + new_content_url + "' already exists on server", new_content_url)
+        add_request = self.__build_site_request_xml(new_site_name, new_content_url, admin_mode, user_quota, storage_quota,
                                                     disable_subscriptions)
         url = self.build_api_url("sites/", 'login')  # Site actions drop back out of the site ID hierarchy like a login
         self.log(add_request)
@@ -589,23 +631,18 @@ class TabRestApi:
             raise NoMatchFoundException("Group {} does not exist on server".format(group_luid))
 
         if group.get("name") != 'All Users':
-            # Check that user_luid exists
-            
-                # Test for str vs. collection
-                if isinstance(user_luid_s, (str, unicode)):
-                    user_luids = [user_luid_s]  # Make single into a collection
-                else:
-                    user_luids = user_luid_s
-                for user_luid in user_luids:
-                    self.query_user_by_luid(user_luid)
-                    add_request = '<tsRequest><user id="{}" /></tsRequest>'.format(user_luid)
-                    self.log(add_request)
-                    url = self.build_api_url("groups/{}/users/".format(group_luid))
-                    self.log(url)
-                    try:
-                        self.send_add_request(url, add_request)
-                    except:
-                        raise NoMatchFoundException("User {} does not exist on server".format(user_luid))
+            # Test for str vs. collection
+            user_luids = self.to_list(user_luid_s)
+            for user_luid in user_luids:
+                self.query_user_by_luid(user_luid)
+                add_request = '<tsRequest><user id="{}" /></tsRequest>'.format(user_luid)
+                self.log(add_request)
+                url = self.build_api_url("groups/{}/users/".format(group_luid))
+                self.log(url)
+                try:
+                    self.send_add_request(url, add_request)
+                except:
+                    raise NoMatchFoundException("User {} does not exist on server".format(user_luid))
         else:
             self.log("Skipping add action to 'All Users' group")
 
@@ -618,10 +655,7 @@ class TabRestApi:
         url = self.build_api_url("workbooks/{}/tags".format(wb_luid))
 
         request = "<tsRequest><tags>"
-        if isinstance(tag_s, (str, unicode)):
-            tags = [tag_s]  # Make single into a collection
-        else:
-            tags = tag_s
+        tags = self.to_list(tag_s)
         for tag in tags:
             request += "<tag label='{}/'>".format(str(tag))
         request += "</tsRequest>"
@@ -642,6 +676,66 @@ class TabRestApi:
         request = '<tsRequest><favorite label="{}"><view id="{}" /></favorite></tsRequest>'.format(favorite_name, view_luid)
         url = self.build_api_url("favorites/{}".format(user_luid))
         return self.send_add_request(url, request)
+
+    # Flexible delete. dict { capability_name : capability_mode } 'Allow' or 'Deny'
+    # Assumes group because you should be doing all your security by groups instead of individuals
+    def add_permissions_by_luids(self, obj_type, obj_luid_s, luid_s, permissions_dict, luid_type='group'):
+        if luid_type not in ['group', 'user']:
+            raise InvalidOptionException("luid_type can only be 'group' or 'user'")
+        if obj_type not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "workbook","datasource" or "project"')
+
+        luids = self.to_list(luid_s)
+        obj_luids = self.to_list(obj_luid_s)
+
+        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict, obj_type)
+        for obj_luid in obj_luids:
+            request = "<tsRequest><permissions><{} id='{}' />".format(obj_type, obj_luid)
+            for luid in luids:
+                request += "<granteeCapabilities><{} id='{}' />".format(luid_type, luid)
+                request += capabilities_xml
+                request += "</granteeCapabilities>"
+            request += "</permissions></tsRequest>"
+            url = self.build_api_url("{}s/{}/permissions".format(obj_type, obj_luid))
+            self.send_update_request(url, request)
+
+    # dict of capability_name : capability_mode ('Allow' or 'Deny')
+    def add_workbook_permissions_for_users_by_luid(self, wb_luid, user_luid_s, permissions_dict):
+        # Check workbook
+        self.query_workbook_by_luid(wb_luid)
+
+        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict)
+        request = "<tsRequest><permissions><workbook id='{}' />".format(wb_luid)
+
+        user_luids = self.to_list(user_luid_s)
+        for user_luid in user_luids:
+            # Check user
+            self.query_user_by_luid(user_luid)
+            request += "<granteeCapabilities><user id='{}' />".format(user_luid)
+            request += capabilities_xml
+            request += "</granteeCapabilities>"
+        request += "</permissions></tsResponse>"
+        url = self.build_api_url("workbooks/{}/permissions".format(wb_luid))
+        self.send_update_request(url, request)
+
+    # dict of capability_name : capability_mode ('Allow' or 'Deny')
+    def add_workbook_permissions_for_groups_by_luid(self, wb_luid, group_luid_s, permissions_dict):
+        # Check workbook
+        self.query_workbook_by_luid(wb_luid)
+
+        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict)
+        request = "<tsRequest><permissions><workbook id='{}' />".format(wb_luid)
+
+        group_luids = self.to_list(group_luid_s)
+        for group_luid in group_luids:
+            # Check user
+            self.query_group_by_luid(group_luid)
+            request += "<granteeCapabilities><group id='{}' />".format(group_luid)
+            request += capabilities_xml
+            request += "</granteeCapabilities>"
+        request += "</permissions></tsResponse>"
+        url = self.build_api_url("workbooks/{}/permissions".format(wb_luid))
+        self.send_update_request(url, request)
 
     #
     # Update Methods
@@ -788,29 +882,18 @@ class TabRestApi:
         self.log(url)
         return self.send_update_request(url, update_request)
 
-        # Creates a single XML block based on capabilities_dict that is passed in
-        # Capabilities dict like { capName : 'Allow', capName : 'Deny'...}
-
-    def __create_grantee_capabilities_xml(self, capabilities_dict, grantee_luid, grantee_type='group'):
-        if grantee_type not in ['group', 'user']:
-            raise InvalidOptionException("grantee_type can only be 'group' or 'user'")
-
-        xml = '<granteeCapabilities><{} id="{}" />\n<capabilities>'.format(grantee_type, grantee_luid)
-        for cap in capabilities_dict:
-            # Check it is a valid capability
-            if cap not in (self.__workbook_capabilities, self.__datasource_capabilities):
-                raise InvalidOptionException("'{}' is not an available capability in the REST API".format(cap))
-            # Check that it is either 'Allow' or 'Deny'
-            if capabilities_dict[cap] not in ['Allow', 'Deny']:
-                raise InvalidOptionException(
-                    "'{}' is not acceptable as a mode, only 'Allow' or 'Deny' work".format(capabilities_dict[cap]))
-            xml += '<capability name="{}" mode="{}" />'.format(cap, capabilities_dict[cap])
-        xml += '</granteeCapabilities>'
-        return xml
+    # Creates a single XML block based on capabilities_dict that is passed in
+    # Capabilities dict like { capName : 'Allow', capName : 'Deny'...}
 
     # Can take single group_luid or list and will assign the same capabilities to each group sent in
-    def update_workbook_capabilities_for_groups_by_luid(self, wb_luid, group_luid_s, capabilities_dict):
-        return 0
+    # The essence of this update is that we delete the capabilities, then add them back as we want
+    def update_permissions_by_luids(self, obj_type, obj_luid_s, luid_s, permissions_dict, luid_type='group'):
+        obj_luids = self.to_list(obj_luid_s)
+        luids = self.to_list(luid_s)
+        if obj_type.lower() not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "project", "datasource" or "workbook"')
+        self.delete_permissions_by_luids(obj_type, obj_luids, luids, permissions_dict, luid_type)
+        self.add_permissions_by_luids(obj_type, obj_luids, luids, permissions_dict, luid_type)
 
     #
     # Delete methods
@@ -818,10 +901,7 @@ class TabRestApi:
 
     # Can take collection or luid_string
     def delete_datasources_by_luid(self, datasource_luid_s):
-        if isinstance(datasource_luid_s, (str, unicode)):
-            datasource_luids = [datasource_luid_s]  # Make single into a collection
-        else:
-            datasource_luids = datasource_luid_s
+        datasource_luids = self.to_list(datasource_luid_s)
         for datasource_luid in datasource_luids:
             # Check if datasource_luid exists
             self.query_datasource_by_luid(datasource_luid)
@@ -830,10 +910,7 @@ class TabRestApi:
             self.send_delete_request(url)
 
     def delete_projects_by_luid(self, project_luid_s):
-        if isinstance(project_luid_s, (str, unicode)):
-            project_luids = [project_luid_s]  # Make single into a collection
-        else:
-            project_luids = project_luid_s
+        project_luids = self.to_list(project_luid_s)
         for project_luid in project_luids:
             # Check if project_luid exists
             self.query_project_by_luid(project_luid)
@@ -849,10 +926,7 @@ class TabRestApi:
 
     # Can take collection or luid_string
     def delete_workbooks_by_luid(self, wb_luid_s):
-        if isinstance(wb_luid_s, (str, unicode)):
-            wb_luids = [wb_luid_s]  # Make single into a collection
-        else:
-            wb_luids = wb_luid_s
+        wb_luids = self.to_list(wb_luid_s)
         for wb_luid in wb_luids:
             # Check if workbook_luid exists
             self.query_workbook_by_luid(wb_luid)
@@ -864,11 +938,7 @@ class TabRestApi:
     def delete_workbooks_from_user_favorites_by_luid(self, wb_luid_s, user_luid):
         # Check if users exist
         self.query_user_by_luid(user_luid)
-        # Check if workbook_luid exists
-        if isinstance(wb_luid_s, (str, unicode)):
-            wb_luids = [wb_luid_s]  # Make single into a collection
-        else:
-            wb_luids = wb_luid_s
+        wb_luids = self.to_list(wb_luid_s)
         for wb_luid in wb_luids:
             # Check if workbook_luid exists
             self.query_workbook_by_luid(wb_luid)
@@ -879,29 +949,22 @@ class TabRestApi:
     def delete_views_from_user_favorites_by_luid(self, view_luid_s, user_luid):
         # Check if users exist
         self.query_user_by_luid(user_luid)
-        # Check if workbook_luid exists
-        if isinstance(view_luid_s, (str, unicode)):
-            view_luids = [view_luid_s]  # Make single into a collection
-        else:
-            view_luids = view_luid_s
+
+        view_luids = self.to_list(view_luid_s)
         for view_luid in view_luids:
             # Check if workbook_luid exists
-            self.query_workbook_by_luid(view_luid)
             url = self.build_api_url("favorites/{}/views/{}".format(user_luid, view_luid))
             self.log("Removing view from favorites via " + url)
             self.send_delete_request(url)
 
     # Can take collection or string user_luid string
     def remove_users_from_group_by_luid(self, user_luid_s, group_luid):
-        # Check if user and group luids exist
+        # Check if group luids exist
         self.query_group_by_luid(group_luid)
 
-        # Check if user_luid exists
-        if isinstance(user_luid_s, (str, unicode)):
-            user_luids = [user_luid_s]  # Make single into a collection
-        else:
-            user_luids = user_luid_s
+        user_luids = self.to_list(user_luid_s)
         for user_luid in user_luids:
+            # Check if user exists
             self.query_user_by_luid(user_luid)
             url = self.build_api_url("groups/{}/users/{}".format(user_luid, group_luid))
             self.log("Removing user from group via DELETE on " + url)
@@ -909,16 +972,40 @@ class TabRestApi:
 
     # Can take collection or single user_luid string
     def remove_users_from_site_by_luid(self, user_luid_s):
-        # Check if user_luid exists
-        if isinstance(user_luid_s, (str, unicode)):
-            user_luids = [user_luid_s]  # Make single into a collection
-        else:
-            user_luids = user_luid_s
+        user_luids = self.to_list(user_luid_s)
         for user_luid in user_luids:
+            # Check if user_luid exists
             self.query_user_by_luid(user_luid)
             url = self.build_api_url("users/{}".format(user_luid))
             self.log("Removing user from site via DELETE on " + url)
             self.send_delete_request(url)
+
+    # Flexible delete. dict { capability_name : capability_mode } 'Allow' or 'Deny'
+    # Assumes group because you should be doing all your security by groups instead of individuals
+    def delete_permissions_by_luids(self, obj_type, obj_luid_s, luid_s, permissions_dict, luid_type='group'):
+        if luid_type not in ['group', 'user']:
+            raise InvalidOptionException("luid_type can only be 'group' or 'user'")
+        if obj_type not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "workbook","datasource" or "project"')
+
+        luids = self.to_list(luid_s)
+        obj_luids = self.to_list(obj_luid_s)
+
+        for luid in luids:
+            for obj_luid in obj_luids:
+                # Check capabiltiies are allowed
+                for cap in permissions_dict:
+                    if permissions_dict[cap] not in ['Allow', 'Deny']:
+                        raise InvalidOptionException("Capability mode must be 'Allow' or 'Deny'")
+                    if cap not in self.__workbook_capabilities + self.__datasource_capabilities:
+                        raise InvalidOptionException("'{}' is not a capability in the REST API".format(cap))
+                    if obj_type == 'datasource' and cap not in self.__datasource_capabilities:
+                        raise InvalidOptionException("'{}' is not a valid capability for a datasource".format(cap))
+                    if obj_type == 'workbook' and cap not in self.__workbook_capabilities:
+                        raise InvalidOptionException("'{}' is not a valid capability for a workbook".format(cap))
+
+                    url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/{}".format(obj_type, obj_luid, luid_type, luid, cap, permissions_dict[cap]))
+                    self.send_delete_request(url)
 
     # Permissions delete -- this is "Delete Workbook Permissions" for users or groups
     def delete_workbook_capability_for_user_by_luid(self, wb_luid, user_luid, capability_name, capability_mode):
@@ -962,10 +1049,7 @@ class TabRestApi:
     def delete_tags_from_workbook_by_luid(self, wb_luid, tag_s):
         # Check wb_luid
         self.query_workbook_by_luid(wb_luid)
-        if isinstance(tag_s, (str, unicode)):
-            tags = [tag_s]  # Make single into a collection
-        else:
-            tags = tag_s
+        tags = self.to_list(tag_s)
 
         deleted_count = 0
         for tag in tags:
@@ -983,13 +1067,17 @@ class TabRestApi:
 
     def publish_workbook(self, workbook_filename, workbook_name, project_luid, overwrite=False,
                          connection_username=None, connection_password=None, save_credentials=True):
-        self.publish_content('workbook', workbook_filename, workbook_name, project_luid, overwrite, connection_username,
-                             connection_password, save_credentials)
+        xml = self.publish_content('workbook', workbook_filename, workbook_name, project_luid, overwrite, connection_username,
+                                   connection_password, save_credentials)
+        datasource = xml.xpath('//t:datasource', namespaces=self.__ns_map)
+        return datasource[0].get('id')
 
     def publish_datasource(self, ds_filename, ds_name, project_luid, overwrite=False, connection_username=None,
                            connection_password=None, save_credentials=True):
-        self.publish_content('datasource', ds_filename, ds_name, project_luid, overwrite, connection_username,
-                             connection_password, save_credentials)
+        xml = self.publish_content('datasource', ds_filename, ds_name, project_luid, overwrite, connection_username,
+                                   connection_password, save_credentials)
+        workbook = xml.xpath('//t:workbook', namespaces=self.__ns_map)
+        return workbook[0].get('id')
 
     # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
     def publish_content(self, content_type, content_filename, content_name, project_luid, overwrite=False,
@@ -1077,8 +1165,8 @@ class TabRestApi:
                 str(overwrite).lower())
             publish_request += "--"  # Need to finish off the last boundary
             self.log("Finishing the upload with a publish request")
-            self.send_publish_request(url, publish_request, boundary_string)
             content_file.close()
+            return self.send_publish_request(url, publish_request, boundary_string)
 
     def initiate_file_upload(self):
         url = self.build_api_url("fileUploads")
@@ -1218,12 +1306,23 @@ class RestXmlRequest:
             response = opener.open(request)
             self.__raw_response = response.read()  # Leave the UTF8 decoding to lxml
             self.log("Raw Response:\n{}".format(str(self.__raw_response)))
+            return True
         except urllib2.HTTPError as e:
-            self.log(str(e.code))
-            self.log(str(e.reason))
-            self.log(str(e.msg))
-            self.log(str(e.hdrs))
-            self.log(str(e.fp))
+            # REST API returns 400 type errors that can be recovered from, so handle them
+            raw_error_response = e.fp.read()
+            self.log("Received a {} error, here was response:".format(str(e.code)))
+            self.log(raw_error_response.decode('utf8'))
+
+            utf8_parser = etree.XMLParser(encoding='utf-8')
+            xml = etree.parse(StringIO(raw_error_response), parser=utf8_parser)
+            tableau_error = xml.xpath('//t:error', namespaces=self.__ns_map)
+            error_code = tableau_error[0].get('code')
+            self.log('Tableau REST API error code is: {}'.format(error_code))
+            if e.code in [400, 401, 402, 403, 404]:
+                # If 'not exists' for a delete, recover and log
+                if self.__http_verb == 'delete':
+                    self.log('Delete action attempted on non-exists, keep going')
+                    raise RecoverableHTTPException(e.code, error_code)
             raise
         except:
             raise
@@ -1276,8 +1375,10 @@ class RestXmlRequest:
                 combined_xml_string += "</tsResponse>"
 
                 self.__xml_object = etree.parse(StringIO(combined_xml_string), parser=utf8_parser)
+                return True
         elif self.__response_type in ['binary', 'png']:
             self.log('Binary response (binary or png) rather than XML')
+            return True
 
 
 class Logger:
@@ -1316,3 +1417,9 @@ class NotSignedInException(Exception):
 class InvalidOptionException(Exception):
     def __init__(self, msg):
         self.msg = msg
+
+
+class RecoverableHTTPException(Exception):
+    def __init__(self, http_code, tableau_error_code):
+        self.http_code = http_code
+        self.tableau_error_code = tableau_error_code
