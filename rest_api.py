@@ -180,11 +180,15 @@ class TabRestApi:
                 if cap not in self.__datasource_capabilities + self.__workbook_capabilities:
                     raise InvalidOptionException('{} is not a valid capability in the REST API'.format(cap))
             if obj_type == 'datasource':
+                # Ignore if not available for datasource
                 if cap not in self.__datasource_capabilities:
-                    raise InvalidOptionException('{} is not a valid capability for a datasource'.format(cap))
+                    self.log('{} is not a valid capability for a datasource'.format(cap))
+                    continue
             if obj_type == 'workbook':
+                # Ignore if not available for workbook
                 if cap not in self.__workbook_capabilities:
-                    raise InvalidOptionException('{} is not a valid capability for a workbook'.format(cap))
+                    self.log('{} is not a valid capability for a workbook'.format(cap))
+                    continue
             xml += '<capability name="{}" mode="{}" />'.format(cap, capabilities_dict[cap])
         xml += '</capabilities>'
         return xml
@@ -773,7 +777,7 @@ class TabRestApi:
             update_request += '<project id="{}"/>'.format(new_project_luid)
         if new_owner_luid is not False:
             update_request += '<owner id="{}"/>'.format(new_owner_luid)
-        update_request += "</datasource></tsRequest?"
+        update_request += "</datasource></tsRequest>"
         url = self.build_api_url("datasources/{}".format(datasource_luid))
         self.log(update_request)
         self.log(url)
@@ -841,17 +845,17 @@ class TabRestApi:
                             storage_quota=False, disable_subscriptions=False, state=False):
         update_request = self.__build_site_request_xml(site_name, content_url, admin_mode, user_quota, storage_quota,
                                                        disable_subscriptions, state)
-        url = self.build_api_url("{}".format(self.__site_luid))
+        url = self.build_api_url("/")
         self.log(update_request)
         self.log(url)
         return self.send_update_request(url, update_request)
 
         # Docs do not list a name update function. Is that true?
 
-    def update_workbook_by_luid(self, workbook_luid, new_project_luid=False, new_owner_luid=False):
+    def update_workbook_by_luid(self, workbook_luid, new_project_luid=False, new_owner_luid=False, show_tabs=False):
         # Check that workbook exists
         self.query_workbook_by_luid(workbook_luid)
-        update_request = "<tsRequest><workbook>"
+        update_request = "<tsRequest><workbook showTabs='{}'>".format(str(show_tabs).lower())
         if new_project_luid is not False:
             # Check if new project_luid exists with query
             self.query_project_by_luid(new_project_luid)
@@ -862,7 +866,7 @@ class TabRestApi:
             update_request += '<owner id="{}" />'.format(new_owner_luid)
         update_request += '</workbook></tsRequest>'
         self.log(update_request)
-        url = self.build_api_url("workbooks")
+        url = self.build_api_url("workbooks/{}".format(workbook_luid))
         self.log(url)
         return self.send_update_request(url, update_request)
 
@@ -1308,6 +1312,9 @@ class RestXmlRequest:
             self.log("Raw Response:\n{}".format(str(self.__raw_response)))
             return True
         except urllib2.HTTPError as e:
+            # No recoverying from a 500
+            if e.code in [500]:
+                raise
             # REST API returns 400 type errors that can be recovered from, so handle them
             raw_error_response = e.fp.read()
             self.log("Received a {} error, here was response:".format(str(e.code)))
