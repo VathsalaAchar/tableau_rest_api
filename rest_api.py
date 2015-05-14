@@ -571,7 +571,7 @@ class TabRestApi:
         self.log(url)
         try:
             new_user_luid = self.add_user_by_username(username)
-            self.update_user(new_user_luid, fullname, password, email)
+            self.update_user(new_user_luid, fullname, site_role, password, email)
             return new_user_luid
         except AlreadyExistsException as e:
             self.log("Username " + username + " already exists on the server with luid " + e.existing_luid)
@@ -825,9 +825,9 @@ class TabRestApi:
             update_request += 'name="{}" '.format(new_project_name)
         if new_project_description is not False:
             update_request += 'description="{}"'.format(new_project_description)
-        update_request += "/><tsRequest>"
+        update_request += "/></tsRequest>"
         self.log(update_request)
-        url = self.build_api_url("projects")
+        url = self.build_api_url("projects/{}".format(project_luid))
         self.log(url)
         return self.send_update_request(url, update_request)
 
