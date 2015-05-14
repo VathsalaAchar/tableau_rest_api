@@ -1069,15 +1069,15 @@ class TabRestApi:
                          connection_username=None, connection_password=None, save_credentials=True):
         xml = self.publish_content('workbook', workbook_filename, workbook_name, project_luid, overwrite, connection_username,
                                    connection_password, save_credentials)
-        datasource = xml.xpath('//t:datasource', namespaces=self.__ns_map)
-        return datasource[0].get('id')
+        workbook = xml.xpath('//t:workbook', namespaces=self.__ns_map)
+        return workbook[0].get('id')
 
     def publish_datasource(self, ds_filename, ds_name, project_luid, overwrite=False, connection_username=None,
                            connection_password=None, save_credentials=True):
         xml = self.publish_content('datasource', ds_filename, ds_name, project_luid, overwrite, connection_username,
                                    connection_password, save_credentials)
-        workbook = xml.xpath('//t:workbook', namespaces=self.__ns_map)
-        return workbook[0].get('id')
+        datasource = xml.xpath('//t:datasource', namespaces=self.__ns_map)
+        return datasource[0].get('id')
 
     # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
     def publish_content(self, content_type, content_filename, content_name, project_luid, overwrite=False,
@@ -1148,9 +1148,9 @@ class TabRestApi:
 
             publish_request += content
 
-            publish_request += "\r\n\r\n--{}--".format(boundary_string)
+            publish_request += "\r\n--{}--".format(boundary_string)
             url = self.build_api_url("{}s").format(content_type) + "?overwrite={}".format(str(overwrite).lower())
-            self.send_publish_request(url, publish_request, boundary_string)
+            return self.send_publish_request(url, publish_request, boundary_string)
         # Break up into chunks for upload
         else:
             self.log("Greater than 10 MB, uploading in chunks")
