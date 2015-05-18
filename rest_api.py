@@ -125,8 +125,15 @@ class TabRestApi:
         d = {}
         for element in lxml_obj:
             e_id = element.get("id")
-            name = element.get("name")
-            d[name] = e_id
+            # If list is collection, have to run one deeper
+            if e_id is None:
+                for list_element in element:
+                    e_id = list_element.get("id")
+                    name = list_element.get("name")
+                    d[name] = e_id
+            else:
+                name = element.get("name")
+                d[name] = e_id
         return d
 
     #
@@ -269,6 +276,8 @@ class TabRestApi:
         api.set_http_verb('delete')
         try:
             api.request_from_api(0)  # Zero disables paging, for all non queries
+            # Return for counter
+            return 1
         except RecoverableHTTPException as e:
             self.log('Recoverable HTTP Exception Response {}, Tableau Code {}'.format(e.http_code, e.tableau_error_code))
             if e.tableau_error_code in [404003]:
@@ -500,7 +509,7 @@ class TabRestApi:
         return self.query_resource("workbooks/{}/views?includeUsageStatistics={}".format(wb_luid, str(usage).lower()))
 
     def query_workbook_permissions_by_luid(self, wb_luid):
-        return self.query_resource("workbooks/{}/permissions", format(wb_luid))
+        return self.query_resource("workbooks/{}/permissions".format(wb_luid))
 
     def query_workbook_permissions_for_username_by_workbook_name(self, username, wb_name):
         wb_luid = self.query_workbook_for_username_by_workbook_name(username, wb_name)
@@ -661,9 +670,9 @@ class TabRestApi:
         request = "<tsRequest><tags>"
         tags = self.to_list(tag_s)
         for tag in tags:
-            request += "<tag label='{}/'>".format(str(tag))
-        request += "</tsRequest>"
-        return self.send_add_request(url, request)
+            request += "<tag label='{}' />".format(str(tag))
+        request += "</tags></tsRequest>"
+        return self.send_update_request(url, request)
 
     def add_workbook_to_user_favorites_by_luid(self, favorite_name, wb_luid, user_luid):
         # Check existence of user
@@ -671,7 +680,7 @@ class TabRestApi:
         self.query_workbook_by_luid(wb_luid)
         request = '<tsRequest><favorite label="{}"><workbook id="{}" /></favorite></tsRequest>'.format(favorite_name, wb_luid)
         url = self.build_api_url("favorites/{}".format(user_luid))
-        return self.send_add_request(url, request)
+        return self.send_update_request(url, request)
 
     def add_view_to_user_favorites_by_luid(self, favorite_name, view_luid, user_luid):
         # Check existence of user
@@ -679,7 +688,7 @@ class TabRestApi:
         # self.query_views_by_luid(wb_luid) # Should figured out if view exists here
         request = '<tsRequest><favorite label="{}"><view id="{}" /></favorite></tsRequest>'.format(favorite_name, view_luid)
         url = self.build_api_url("favorites/{}".format(user_luid))
-        return self.send_add_request(url, request)
+        return self.send_update_request(url, request)
 
     # Flexible delete. dict { capability_name : capability_mode } 'Allow' or 'Deny'
     # Assumes group because you should be doing all your security by groups instead of individuals
@@ -1004,9 +1013,9 @@ class TabRestApi:
                     if cap not in self.__workbook_capabilities + self.__datasource_capabilities:
                         raise InvalidOptionException("'{}' is not a capability in the REST API".format(cap))
                     if obj_type == 'datasource' and cap not in self.__datasource_capabilities:
-                        raise InvalidOptionException("'{}' is not a valid capability for a datasource".format(cap))
+                        self.log("'{}' is not a valid capability for a datasource".format(cap))
                     if obj_type == 'workbook' and cap not in self.__workbook_capabilities:
-                        raise InvalidOptionException("'{}' is not a valid capability for a workbook".format(cap))
+                        self.log("'{}' is not a valid capability for a workbook".format(cap))
 
                     url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/{}".format(obj_type, obj_luid, luid_type, luid, cap, permissions_dict[cap]))
                     self.send_delete_request(url)
@@ -1278,7 +1287,11 @@ class RestXmlRequest:
         self.log("HTTP verb is {}".format(self.__http_verb))
         url = self.__base_url
         if page_number > 0:
-            url = url + "?pageNumber={}".format(str(page_number))
+            param_separator = '?'
+            # If already a parameter, just append
+            if '?' in url:
+                param_separator = '&'
+            url = url + "{}pageNumber={}".format(param_separator, str(page_number))
         self.__last_url_request = url
 
         # Logic to create correct request
@@ -1313,7 +1326,7 @@ class RestXmlRequest:
             return True
         except urllib2.HTTPError as e:
             # No recoverying from a 500
-            if e.code in [500]:
+            if e.code >= 500:
                 raise
             # REST API returns 400 type errors that can be recovered from, so handle them
             raw_error_response = e.fp.read()
