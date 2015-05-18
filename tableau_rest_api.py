@@ -18,7 +18,7 @@ from StringIO import StringIO
 import math, time, random, os
 
 
-class TabRestApi:
+class TableauRestApi:
     # Defines a class that represents a RESTful connection to Tableau Server.
     def __init__(self, server, username, password, site_content_url=""):
         self.__server = server
