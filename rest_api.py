@@ -527,20 +527,10 @@ class TabRestApi:
         wb_luid = self.query_workbook_for_username_by_workbook_name(username, wb_name)
         return self.query_workbook_connections_by_luid(wb_luid)
 
+    # INCOMPLETE
     def save_workbook_view_preview_image_by_luid(self, wb_luid, view_luid, filename):
         # Check for workbook
         self.query_workbook_by_luid(wb_luid)
-        # Open the file to be saved to
-        try:
-            save_file = open(filename, 'wb')
-            url = self.build_api_url("workbooks/{}/views/{}/previewImage".format(wb_luid, view_luid))
-            image = self.send_binary_get_request(url)
-            save_file.write(image)
-            save_file.close()
-
-        except IOError:
-            print "Error: File '" + filename + "' cannot be opened to save to"
-            raise
 
     def save_workbook_preview_image(self, wb_luid, filename):
         # CHeck for workbook
