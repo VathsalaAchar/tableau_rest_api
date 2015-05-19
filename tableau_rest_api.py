@@ -1208,8 +1208,8 @@ class TableauRestApi:
 
             content = content_file.read()
             # Convert utf-8 encoding to regular
-            if file_extension == 'twb':
-                content = content.decode('utf-8')
+            #if file_extension == 'twb':
+                #content = content.decode('utf-8')
 
             publish_request += content
 
@@ -1354,10 +1354,10 @@ class RestXmlRequest:
             request.get_method = lambda: 'DELETE'
 
         if self.__http_verb == 'put' or self.__http_verb == 'post':
-            if self.__xml_request is not None:
-                request.add_data(self.__xml_request.encode("utf8"))
-            elif self.__publish_content is not None:
+            if self.__publish_content is not None:
                 request.add_data(self.__publish_content)
+            elif self.__xml_request is not None:
+                request.add_data(self.__xml_request.encode("utf8"))
             else:
                 request.add_data("")
         if self.__http_verb == 'put':
