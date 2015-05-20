@@ -529,6 +529,10 @@ class TableauRestApi:
         wb_luid = self.query_workbook_for_username_by_workbook_name(username, wb_name)
         return self.query_workbook_connections_by_luid(wb_luid)
 
+    # Checks status of AD sync process
+    def query_job_by_luid(self, job_luid):
+        return self.query_resource("jobs/{}".format(job_luid))
+
     # Do not include file extension
     def save_workbook_view_preview_image_by_luid(self, wb_luid, view_luid, filename):
         # Check for workbook
@@ -651,6 +655,26 @@ class TableauRestApi:
         self.log(url)
         new_group = self.send_add_request(url, add_request)
         return new_group.xpath('//t:group', namespaces=self.__ns_map)[0].get("id")
+
+    # Creating a synced ad group is completely different, use this method
+    # The luid is only available in the Response header if bg sync. Nothing else is passed this way -- not sure how to expose
+    def create_group_from_ad_group(self, ad_group_name, ad_domain_name, default_site_role='Unlicensed', sync_as_background=True):
+        if default_site_role not in self.__site_roles:
+            raise InvalidOptionException('"{}" is not an acceptable site role'.format(default_site_role))
+        add_request = '<tsRequest><group name="{}" />'.format(ad_group_name)
+        add_request += '<import source="ActiveDirectory" domainName="{}" siteRole="{}" />'.format(ad_domain_name, default_site_role)
+        add_request += '</group></tsRequest>'
+        self.log(add_request)
+        url = self.build_api_url("groups/?asJob={}".format(str(sync_as_background).lower()))
+        self.log(url)
+        response = self.send_add_request(url, add_request)
+        # Response is different from immediate to background update. job ID lets you track progress on background
+        if sync_as_background is True:
+            job = response.xpath('//t:job', namespaces=self.__ns_map)
+            return job[0].get('id')
+        if sync_as_background is False:
+            group = response.xpath('//t:group', namespaces=self.__ns_map)
+            return group[0].get('id')
 
     def create_project(self, project_name, project_desc=False):
         add_request = '<tsRequest><project name="{}" '.format(project_name)
@@ -868,20 +892,27 @@ class TableauRestApi:
         return self.send_update_request(url, update_request)
 
     # AD group sync. Must specify the domain and the default site role for imported users
-    def sync_ad_group_by_luid(self, group_luid, ad_group_name, ad_domain, default_site_role, sync_as_background='true'):
+    def sync_ad_group_by_luid(self, group_luid, ad_group_name, ad_domain, default_site_role, sync_as_background=True):
         if sync_as_background not in ['true', 'false']:
             raise InvalidOptionException(
-                "'{}' is not a valid option for sync_as_background. Use 'true' or 'false'".format(sync_as_background))
+                "'{}' is not a valid option for sync_as_background. Use True or False (boolean)".format(str(sync_as_background)).lower())
         if default_site_role not in self.__site_roles:
             raise InvalidOptionException("'{}' is not a valid site role in Tableau".format(default_site_role))
         # Check that the group exists
         self.query_group_by_luid(group_luid)
         update_request = '<tsRequest><group name="{}"><import source="ActiveDirectory" domainName="{}" siteRole="{}" /></group></tsRequest>'.format(
             ad_group_name, ad_domain, default_site_role)
-        url = self.build_api_url("groups/{}".format(group_luid) + "?asJob={}".format(sync_as_background))
+        url = self.build_api_url("groups/{}".format(group_luid) + "?asJob={}".format(str(sync_as_background)).lower())
         self.log(update_request)
         self.log(url)
-        return self.send_update_request(url, update_request)
+        response = self.send_update_request(url, update_request)
+        # Response is different from immediate to background update. job ID lets you track progress on background
+        if sync_as_background is True:
+            job = response.xpath('//t:job', namespaces=self.__ns_map)
+            return job[0].get('id')
+        if sync_as_background is False:
+            group = response.xpath('//t:group', namespaces=self.__ns_map)
+            return group[0].get('id')
 
     def update_project_by_luid(self, project_luid, new_project_name=False, new_project_description=False):
         # Check that project_luid exists
@@ -911,7 +942,6 @@ class TableauRestApi:
         self.log(update_request)
         self.log(url)
         return self.send_update_request(url, update_request)
-
 
     def update_workbook_by_luid(self, workbook_luid, new_project_luid=False, new_owner_luid=False, show_tabs=False):
         # Check that workbook exists
