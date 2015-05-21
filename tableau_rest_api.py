@@ -109,7 +109,7 @@ class TableauRestApi:
     #
 
     def build_api_url(self, call, login=False):
-        if login == 'login':
+        if login is True:
             return self.__server + "/api/2.0/" + call
         else:
             return self.__server + "/api/2.0/sites/" + self.__site_luid + "/" + call
@@ -141,37 +141,37 @@ class TableauRestApi:
     # Internal REST API Helpers (mostly XML definitions that are reused between methods)
     #
     @staticmethod
-    def __build_site_request_xml(site_name=False, content_url=False, admin_mode=False, user_quota=False,
-                                 storage_quota=False, disable_subscriptions=False, state=False):
+    def __build_site_request_xml(site_name=None, content_url=None, admin_mode=None, user_quota=None,
+                                 storage_quota=None, disable_subscriptions=None, state=None):
         request = '<tsRequest><site '
-        if site_name is not False:
+        if site_name is not None:
             request += 'name="{}" '.format(site_name)
-        if content_url is not False:
+        if content_url is not None:
             request += 'contentUrl="{}" '.format(content_url)
-        if admin_mode is not False:
+        if admin_mode is not None:
             request += 'adminMode="{}" '.format(admin_mode)
-        if user_quota is not False:
+        if user_quota is not None:
             request += 'userQuota="{}" '.format(user_quota)
-        if state is not False:
+        if state is not None:
             request += 'state="{}" '.format(state)
-        if storage_quota is not False:
+        if storage_quota is not None:
             request += 'storageQuota="{}" '.format(storage_quota)
-        if disable_subscriptions is not False:
+        if disable_subscriptions is not None:
             request += 'disableSubscriptions="{}" '.format(disable_subscriptions)
         request += '/></tsRequest>'
         return request
 
     @staticmethod
-    def __build_connection_update_xml(new_server_address=False, new_server_port=False,
-                                      new_connection_username=False, new_connection_password=False):
+    def __build_connection_update_xml(new_server_address=None, new_server_port=None,
+                                      new_connection_username=None, new_connection_password=None):
         update_request = "<tsRequest><connection "
-        if new_server_address is not False:
+        if new_server_address is not None:
             update_request += 'serverAddress="{}" '.format(new_server_address)
-        if new_server_port is not False:
+        if new_server_port is not None:
             update_request += 'serverPort="{}" '.format(new_server_port)
-        if new_connection_username is not False:
+        if new_connection_username is not None:
             update_request += 'userName="{}" '.format(new_connection_username)
-        if new_connection_username is not False:
+        if new_connection_username is not None:
             update_request += 'password="{}"'.format(new_connection_password)
         update_request += "/></tsRequest>"
         return update_request
@@ -212,7 +212,7 @@ class TableauRestApi:
         else:
             login_payload = '<tsRequest><credentials name="{}" password="{}" ><site contentUrl="{}" /></credentials></tsRequest>'.format(
                 self.__username, self.__password, self.__site)
-        url = self.build_api_url("auth/signin", 'login')
+        url = self.build_api_url("auth/signin", login=True)
         self.log(url)
         api = RestXmlRequest(url, False, self.__logger)
         api.set_xml_request(login_payload)
@@ -228,7 +228,7 @@ class TableauRestApi:
         self.log("Site ID is " + self.__site_luid)
 
     def signout(self):
-        url = self.build_api_url("auth/signout", "login")
+        url = self.build_api_url("auth/signout", login=True)
         self.log(url)
         api = RestXmlRequest(url, False, self.__logger)
         api.set_http_verb('post')
@@ -283,9 +283,7 @@ class TableauRestApi:
             self.log('Recoverable HTTP Exception Response {}, Tableau Code {}'.format(e.http_code, e.tableau_error_code))
             if e.tableau_error_code in [404003]:
                 self.log('Delete action did not find the resouce. Consider successful, keep going')
-        except Exception as e:
-            self.log(str(api.get_last_url_request()))
-            self.log(str(api.get_last_response_headers()))
+        except:
             raise
 
     def send_publish_request(self, url, request, boundary_string):
@@ -387,7 +385,7 @@ class TableauRestApi:
 
     # Site queries don't have the site portion of the URL, so login option gets correct format
     def query_sites(self):
-        return self.query_resource("sites/", 'login')
+        return self.query_resource("sites/", login=True)
 
     # Methods for getting info about the sites, since you can only query a site when you are signed into it
     # Return list of all site luids
@@ -443,7 +441,7 @@ class TableauRestApi:
 
     # You can only query a site you have logged into this way. Better to use methods that run through query_sites
     def query_current_site(self):
-        return self.query_resource("sites/" + self.__site_luid, 'login')
+        return self.query_resource("sites/" + self.__site_luid, login=True)
 
     def query_user_by_luid(self, luid):
         return self.query_resource("users/{}".format(luid))
@@ -571,18 +569,23 @@ class TableauRestApi:
         self.query_datasource_by_luid(ds_luid)
         # Open the file to be saved to
         try:
-
             url = self.build_api_url("datasources/{}/content".format(ds_luid))
             ds = self.send_binary_get_request(url)
+            extension = None
             if self.__last_response_content_type.find('application/xml') != -1:
                 extension = '.tds'
             elif self.__last_response_content_type.find('application/octet-stream') != -1:
                 extension = '.tdsx'
+            if extension is None:
+                raise IOError('File extension could not be determined')
+        except:
+            raise
+        try:
             save_file = open(filename + extension, 'wb')
             save_file.write(ds)
             save_file.close()
         except IOError:
-            print "Error: File '" + filename + extension +  "' cannot be opened to save to"
+            print "Error: File '" + filename + extension + "' cannot be opened to save to"
             raise
 
     # Do not include file extension, added automatically
@@ -593,10 +596,16 @@ class TableauRestApi:
         try:
             url = self.build_api_url("workbooks/{}/content".format(wb_luid))
             wb = self.send_binary_get_request(url)
+            extension = None
             if self.__last_response_content_type.find('application/xml') != -1:
                 extension = '.twb'
             elif self.__last_response_content_type.find('application/octet-stream') != -1:
                 extension = '.twbx'
+            if extension is None:
+                raise IOError('File extension could not be determined')
+        except:
+            raise
+        try:
             save_file = open(filename + extension, 'wb')
             save_file.write(wb)
             save_file.close()
@@ -704,7 +713,7 @@ class TableauRestApi:
             raise AlreadyExistsException("Content URL '" + new_content_url + "' already exists on server", new_content_url)
         add_request = self.__build_site_request_xml(new_site_name, new_content_url, admin_mode, user_quota, storage_quota,
                                                     disable_subscriptions)
-        url = self.build_api_url("sites/", 'login')  # Site actions drop back out of the site ID hierarchy like a login
+        url = self.build_api_url("sites/", login=True)  # Site actions drop back out of the site ID hierarchy like a login
         self.log(add_request)
         self.log(url)
         new_site = self.send_add_request(url, add_request)
@@ -794,7 +803,7 @@ class TableauRestApi:
         # Check workbook
         self.query_workbook_by_luid(wb_luid)
 
-        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict)
+        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict, 'workbook')
         request = "<tsRequest><permissions><workbook id='{}' />".format(wb_luid)
 
         user_luids = self.to_list(user_luid_s)
@@ -813,7 +822,7 @@ class TableauRestApi:
         # Check workbook
         self.query_workbook_by_luid(wb_luid)
 
-        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict)
+        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict, 'workbook')
         request = "<tsRequest><permissions><workbook id='{}' />".format(wb_luid)
 
         group_luids = self.to_list(group_luid_s)
@@ -831,19 +840,19 @@ class TableauRestApi:
     # Update Methods
     #
 
-    def update_user(self, user_luid, full_name=False, site_role=False, password=False,
-                    email=False):
+    def update_user(self, user_luid, full_name=None, site_role=None, password=None,
+                    email=None):
 
         # Check if user_luid exists
         self.query_user_by_luid(user_luid)
         update_request = "<tsRequest><user "
-        if full_name is not False:
+        if full_name is not None:
             update_request += 'fullName="{}" '.format(full_name)
-        if site_role is not False:
+        if site_role is not None:
             update_request += 'siteRole="{}" '.format(site_role)
-        if email is not False:
+        if email is not None:
             update_request += 'email="{}" '.format(email)
-        if password is not False:
+        if password is not None:
             update_request += 'password="{}" '.format(password)
         update_request += "/></tsRequest>"
         url = self.build_api_url("users/{}".format(user_luid))
@@ -851,17 +860,17 @@ class TableauRestApi:
         self.log(url)
         return self.send_update_request(url, update_request)
 
-    def update_datasource_by_luid(self, datasource_luid, new_datasource_name=False, new_project_luid=False,
-                                  new_owner_luid=False):
+    def update_datasource_by_luid(self, datasource_luid, new_datasource_name=None, new_project_luid=None,
+                                  new_owner_luid=None):
         # Check if datasource_luid exists
         self.query_datasource_by_luid(datasource_luid)
         update_request = "<tsRequest><datasource"
-        if new_datasource_name is not False:
+        if new_datasource_name is not None:
             update_request = update_request + ' name="{}" '.format(new_datasource_name)
         update_request += ">"  # Complete the tag no matter what
-        if new_project_luid is not False:
+        if new_project_luid is not None:
             update_request += '<project id="{}"/>'.format(new_project_luid)
-        if new_owner_luid is not False:
+        if new_owner_luid is not None:
             update_request += '<owner id="{}"/>'.format(new_owner_luid)
         update_request += "</datasource></tsRequest>"
         url = self.build_api_url("datasources/{}".format(datasource_luid))
@@ -869,8 +878,8 @@ class TableauRestApi:
         self.log(url)
         return self.send_update_request(url, update_request)
 
-    def update_datasource_connection_by_luid(self, datasource_luid, new_server_address=False, new_server_port=False,
-                                             new_connection_username=False, new_connection_password=False):
+    def update_datasource_connection_by_luid(self, datasource_luid, new_server_address=None, new_server_port=None,
+                                             new_connection_username=None, new_connection_password=None):
         # Check if datasource_luid exists
         self.query_datasource_by_luid(datasource_luid)
         update_request = self.__build_connection_update_xml(new_server_address, new_server_port,
@@ -1015,7 +1024,7 @@ class TableauRestApi:
 
     # Can only delete a site that you have signed into
     def delete_current_site(self):
-        url = self.build_api_url("sites/{}".format(self.__site_luid), 'login')
+        url = self.build_api_url("sites/{}".format(self.__site_luid), login=True)
         self.log("Deleting site via " + url)
         self.send_delete_request(url)
 
@@ -1452,7 +1461,7 @@ class RestXmlRequest:
                 total_available = int(pagination.get('totalAvailable'))
                 total_pages = int(math.ceil(float(total_available) / float(page_size)))
                 combined_xml_string = '<tsResponse xmlns="http://tableausoftware.com/api" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://tableausoftware.com/api http://tableausoftware.com/api/ts-api-2.0.xsd">'
-
+                full_xml_obj = None
                 for obj in xml.getroot():
                     if obj.tag != 'pagination':
                         full_xml_obj = obj
