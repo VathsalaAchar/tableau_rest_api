@@ -642,7 +642,7 @@ class TableauRestApi:
             raise
 
     # This is "Add User to Site", since you must be logged into a site
-    def add_user(self, username, fullname, site_role='Unlicensed', password=False, email=False):
+    def add_user(self, username, fullname, site_role='Unlicensed', password=None, email=None):
         # Add username first, then update with full name
         add_request = '<tsRequest><user name="{}" siteRole="{}" /></tsRequest>'.format(username, site_role)
         self.log(add_request)
@@ -685,9 +685,9 @@ class TableauRestApi:
             group = response.xpath('//t:group', namespaces=self.__ns_map)
             return group[0].get('id')
 
-    def create_project(self, project_name, project_desc=False):
+    def create_project(self, project_name, project_desc=None):
         add_request = '<tsRequest><project name="{}" '.format(project_name)
-        if project_desc is not False:
+        if project_desc is not None:
             add_request += 'description="{}"'.format(project_desc)
         add_request += " /></tsRequest>"
         self.log(add_request)
@@ -696,8 +696,8 @@ class TableauRestApi:
         return new_project.xpath('//t:project', namespaces=self.__ns_map)[0].get("id")
 
     # Both SiteName and ContentUrl must be unique to add a site
-    def create_site(self, new_site_name, new_content_url, admin_mode=False, user_quota=False, storage_quota=False,
-                    disable_subscriptions=False):
+    def create_site(self, new_site_name, new_content_url, admin_mode=None, user_quota=None, storage_quota=None,
+                    disable_subscriptions=None):
         # Both SiteName and ContentUrl must be unique to add a site
         self.log('Querying all of the site names prior to create')
         site_names = self.query_all_site_names()
@@ -902,7 +902,7 @@ class TableauRestApi:
 
     # AD group sync. Must specify the domain and the default site role for imported users
     def sync_ad_group_by_luid(self, group_luid, ad_group_name, ad_domain, default_site_role, sync_as_background=True):
-        if sync_as_background not in ['true', 'false']:
+        if sync_as_background not in [True, False]:
             raise InvalidOptionException(
                 "'{}' is not a valid option for sync_as_background. Use True or False (boolean)".format(str(sync_as_background)).lower())
         if default_site_role not in self.__site_roles:
@@ -923,13 +923,13 @@ class TableauRestApi:
             group = response.xpath('//t:group', namespaces=self.__ns_map)
             return group[0].get('id')
 
-    def update_project_by_luid(self, project_luid, new_project_name=False, new_project_description=False):
+    def update_project_by_luid(self, project_luid, new_project_name=None, new_project_description=None):
         # Check that project_luid exists
         self.query_project_by_luid(project_luid)
         update_request = '<tsRequest><project '
-        if new_project_name is not False:
+        if new_project_name is not None:
             update_request += 'name="{}" '.format(new_project_name)
-        if new_project_description is not False:
+        if new_project_description is not None:
             update_request += 'description="{}"'.format(new_project_description)
         update_request += "/></tsRequest>"
         self.log(update_request)
@@ -937,14 +937,14 @@ class TableauRestApi:
         self.log(url)
         return self.send_update_request(url, update_request)
 
-    def update_project_by_name(self, project_name, new_project_name=False, new_project_description=False):
+    def update_project_by_name(self, project_name, new_project_name=None, new_project_description=None):
         project_luid = self.query_project_luid_by_name(project_name)
         return self.update_project_by_luid(project_luid, new_project_name, new_project_description)
 
         # Can only update the site you are signed into, so take site_luid from the object
 
-    def update_current_site(self, site_name=False, content_url=False, admin_mode=False, user_quota=False,
-                            storage_quota=False, disable_subscriptions=False, state=False):
+    def update_current_site(self, site_name=None, content_url=None, admin_mode=None, user_quota=None,
+                            storage_quota=None, disable_subscriptions=None, state=None):
         update_request = self.__build_site_request_xml(site_name, content_url, admin_mode, user_quota, storage_quota,
                                                        disable_subscriptions, state)
         url = self.build_api_url("/")
@@ -952,15 +952,15 @@ class TableauRestApi:
         self.log(url)
         return self.send_update_request(url, update_request)
 
-    def update_workbook_by_luid(self, workbook_luid, new_project_luid=False, new_owner_luid=False, show_tabs=False):
+    def update_workbook_by_luid(self, workbook_luid, new_project_luid=None, new_owner_luid=None, show_tabs=None):
         # Check that workbook exists
         self.query_workbook_by_luid(workbook_luid)
         update_request = "<tsRequest><workbook showTabs='{}'>".format(str(show_tabs).lower())
-        if new_project_luid is not False:
+        if new_project_luid is not None:
             # Check if new project_luid exists with query
             self.query_project_by_luid(new_project_luid)
             update_request += '<project id="{}" />'.format(new_project_luid)
-        if new_owner_luid is not False:
+        if new_owner_luid is not None:
             # Check if new owner_luid exists
             self.query_user_by_luid(new_owner_luid)
             update_request += '<owner id="{}" />'.format(new_owner_luid)
@@ -972,9 +972,9 @@ class TableauRestApi:
 
     # To do this, you need the workbook's connection_luid. Seems to only come from "Query Workbook Connections",
     # which does not return any names, just types and LUIDs
-    def update_workbook_connection_by_luid(self, wb_luid, connection_luid, new_server_address=False,
-                                           new_server_port=False,
-                                           new_connection_username=False, new_connection_password=False):
+    def update_workbook_connection_by_luid(self, wb_luid, connection_luid, new_server_address=None,
+                                           new_server_port=None,
+                                           new_connection_username=None, new_connection_password=None):
         # Check if datasource_luid exists
         self.query_workbook_by_luid(wb_luid)
         self.query_workbook_connections_by_luid(connection_luid)
@@ -1298,7 +1298,7 @@ class TableauRestApi:
 
 # Handles all of the actual HTTP calling
 class RestXmlRequest:
-    def __init__(self, url, token=False, logger=None):
+    def __init__(self, url, token=None, logger=None):
         self.__defined_response_types = ('xml', 'png', 'binary')
         self.__defined_http_verbs = ('post', 'get', 'put', 'delete')
         self.__base_url = url
@@ -1311,7 +1311,7 @@ class RestXmlRequest:
         self.__xml_object = None
         self.__ns_map = {'t': 'http://tableausoftware.com/api'}
         self.__logger = logger
-        self.__publish = False
+        self.__publish = None
         self.__boundary_string = None
         self.__publish_content = None
         self.__http_verb = None
@@ -1401,7 +1401,7 @@ class RestXmlRequest:
                 request.add_data("")
         if self.__http_verb == 'put':
             request.get_method = lambda: 'PUT'
-        if self.__token is not False:
+        if self.__token is not None:
             request.add_header('X-tableau-auth', self.__token)
         if self.__publish is True:
             request.add_header('Content-Type', 'multipart/mixed; boundary={}'.format(self.__boundary_string))
