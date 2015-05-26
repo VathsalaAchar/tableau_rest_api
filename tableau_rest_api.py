@@ -206,7 +206,7 @@ class TableauRestApi:
     #
 
     def signin(self):
-        if self.__site == 'default':
+        if self.__site in ['default', '']:
             login_payload = '<tsRequest><credentials name="{}" password="{}" ><site /></credentials></tsRequest>'.format(
                 self.__username, self.__password)
         else:
@@ -670,7 +670,7 @@ class TableauRestApi:
     def create_group_from_ad_group(self, ad_group_name, ad_domain_name, default_site_role='Unlicensed', sync_as_background=True):
         if default_site_role not in self.__site_roles:
             raise InvalidOptionException('"{}" is not an acceptable site role'.format(default_site_role))
-        add_request = '<tsRequest><group name="{}" />'.format(ad_group_name)
+        add_request = '<tsRequest><group name="{}">'.format(ad_group_name)
         add_request += '<import source="ActiveDirectory" domainName="{}" siteRole="{}" />'.format(ad_domain_name, default_site_role)
         add_request += '</group></tsRequest>'
         self.log(add_request)
