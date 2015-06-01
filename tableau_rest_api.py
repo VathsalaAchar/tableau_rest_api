@@ -15,7 +15,7 @@ except ImportError:
 # StringIO helps with lxml UTF8 parsing
 
 from StringIO import StringIO
-import math, time, random, os
+import math, time, random, os, re
 
 
 class TableauRestApi:
@@ -31,6 +31,7 @@ class TableauRestApi:
         self.__last_error = None
         self.__logger = None
         self.__last_response_content_type = None
+        self.__luid_pattern = r"[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*"
         self.__tableau_namespace = 'http://tableausoftware.com/api'
         self.__datasource_capabilities = ('ChangePermissions', 'Connect', 'Delete', 'ExportXml', 'Read', 'Write')
         self.__workbook_capabilities = (
@@ -104,6 +105,22 @@ class TableauRestApi:
         s = "".join(random_digits)
         return s
 
+    # Convert a permission
+    def convert_server_permission_name_to_rest_permission(self, permission_name):
+        if permission_name in self.__server_to_rest_capability_map:
+            return self.__server_to_rest_capability_map[permission_name]
+        else:
+            raise InvalidOptionException('{} is not a permission name on the Tableau Server'.format(permission_name))
+
+    # 32 hex characters with 4 dashes
+    def is_luid(self, val):
+        if len(val) == 36:
+            if re.match(self.__luid_pattern, val) is not None:
+                return True
+            else:
+                return False
+        else:
+            return False
     #
     # REST API Helper Methods
     #
@@ -330,12 +347,31 @@ class TableauRestApi:
     def query_datasource_by_luid(self, luid):
         return self.query_resource('datasources/{}'.format(luid))
 
+    def query_datasource_by_name(self, name):
+        luid = self.query_datasource_luid_by_name(name)
+        return self.query_datasource_by_luid(luid)
+
+    # Tries to guess name or LUID
+    def query_datasource(self, name_or_luid):
+        # LUID
+        if self.is_luid(name_or_luid):
+            return self.query_datasource_by_luid(name_or_luid)
+        # Name
+        else:
+            return self.query_datasource_by_name(name_or_luid)
+
     def query_datasource_permissions_by_luid(self, luid):
         return self.query_resource('datasources/{}/permissions'.format(luid))
 
     def query_datasource_permissions_by_name(self, name):
         datasource_luid = self.query_datasource_luid_by_name(name)
         return self.query_datasource_permissions_by_luid(datasource_luid)
+
+    def query_datasource_permissions(self, name_or_luid):
+        if self.is_luid(name_or_luid):
+            return self.query_datasource_permissions_by_luid(name_or_luid)
+        else:
+            return self.query_datasource_permissions_by_name(name_or_luid)
 
     def query_groups(self):
         return self.query_resource("groups")
@@ -357,6 +393,16 @@ class TableauRestApi:
         else:
             raise NoMatchFoundException("No group found with name " + name)
 
+    def query_group_by_name(self, name):
+        group_luid = self.query_group_luid_by_name(name)
+        return self.query_group_by_luid(group_luid)
+
+    def query_group(self, name_or_luid):
+        if self.is_luid(name_or_luid):
+            return self.query_group_by_luid(name_or_luid)
+        else:
+            return self.query_group_by_name(name_or_luid)
+
     def query_projects(self):
         return self.query_resource("projects")
 
@@ -376,12 +422,28 @@ class TableauRestApi:
         else:
             raise NoMatchFoundException("No project found with name " + name)
 
+    def query_project_by_name(self, name):
+        luid = self.query_project_luid_by_name(name)
+        return self.query_project_by_luid(luid)
+
+    def query_project(self, name_or_luid):
+        if self.is_luid(name_or_luid):
+            return self.query_project_by_luid(name_or_luid)
+        else:
+            return self.query_project_by_name(name_or_luid)
+
     def query_project_permissions_by_luid(self, luid):
         return self.query_resource("projects/{}/permissions".format(luid))
 
     def query_project_permissions_by_name(self, name):
         project_luid = self.query_project_luid_by_name(name)
         return self.query_project_permissions_by_luid(project_luid)
+
+    def query_project_permissions(self, name_or_luid):
+        if self.is_luid(name_or_luid):
+            return self.query_project_permissions_by_luid(name_or_luid)
+        else:
+            return self.query_project_permissions_by_name(name_or_luid)
 
     # Site queries don't have the site portion of the URL, so login option gets correct format
     def query_sites(self):
@@ -650,7 +712,7 @@ class TableauRestApi:
         self.log(url)
         try:
             new_user_luid = self.add_user_by_username(username)
-            self.update_user(new_user_luid, fullname, site_role, password, email)
+            self.update_user_by_luid(new_user_luid, fullname, site_role, password, email)
             return new_user_luid
         except AlreadyExistsException as e:
             self.log("Username " + username + " already exists on the server with luid " + e.existing_luid)
@@ -745,8 +807,6 @@ class TableauRestApi:
         else:
             self.log("Skipping add action to 'All Users' group")
 
-    # def add_workbook_permissions(self,)
-
     # Tags can be scalar string or list
     def add_tags_to_workbook_by_luid(self, wb_luid, tag_s):
         # Check the wb_luid exists
@@ -776,7 +836,7 @@ class TableauRestApi:
         url = self.build_api_url("favorites/{}".format(user_luid))
         return self.send_update_request(url, request)
 
-    # Flexible delete. dict { capability_name : capability_mode } 'Allow' or 'Deny'
+    # Add dict { capability_name : capability_mode } 'Allow' or 'Deny'
     # Assumes group because you should be doing all your security by groups instead of individuals
     def add_permissions_by_luids(self, obj_type, obj_luid_s, luid_s, permissions_dict, luid_type='group'):
         if luid_type not in ['group', 'user']:
@@ -798,51 +858,12 @@ class TableauRestApi:
             url = self.build_api_url("{}s/{}/permissions".format(obj_type, obj_luid))
             self.send_update_request(url, request)
 
-    # dict of capability_name : capability_mode ('Allow' or 'Deny')
-    def add_workbook_permissions_for_users_by_luid(self, wb_luid, user_luid_s, permissions_dict):
-        # Check workbook
-        self.query_workbook_by_luid(wb_luid)
-
-        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict, 'workbook')
-        request = "<tsRequest><permissions><workbook id='{}' />".format(wb_luid)
-
-        user_luids = self.to_list(user_luid_s)
-        for user_luid in user_luids:
-            # Check user
-            self.query_user_by_luid(user_luid)
-            request += "<granteeCapabilities><user id='{}' />".format(user_luid)
-            request += capabilities_xml
-            request += "</granteeCapabilities>"
-        request += "</permissions></tsResponse>"
-        url = self.build_api_url("workbooks/{}/permissions".format(wb_luid))
-        self.send_update_request(url, request)
-
-    # dict of capability_name : capability_mode ('Allow' or 'Deny')
-    def add_workbook_permissions_for_groups_by_luid(self, wb_luid, group_luid_s, permissions_dict):
-        # Check workbook
-        self.query_workbook_by_luid(wb_luid)
-
-        capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict, 'workbook')
-        request = "<tsRequest><permissions><workbook id='{}' />".format(wb_luid)
-
-        group_luids = self.to_list(group_luid_s)
-        for group_luid in group_luids:
-            # Check user
-            self.query_group_by_luid(group_luid)
-            request += "<granteeCapabilities><group id='{}' />".format(group_luid)
-            request += capabilities_xml
-            request += "</granteeCapabilities>"
-        request += "</permissions></tsResponse>"
-        url = self.build_api_url("workbooks/{}/permissions".format(wb_luid))
-        self.send_update_request(url, request)
-
     #
     # Update Methods
     #
 
-    def update_user(self, user_luid, full_name=None, site_role=None, password=None,
-                    email=None):
-
+    def update_user_by_luid(self, user_luid, full_name=None, site_role=None, password=None,
+                            email=None):
         # Check if user_luid exists
         self.query_user_by_luid(user_luid)
         update_request = "<tsRequest><user "
@@ -859,6 +880,18 @@ class TableauRestApi:
         self.log(update_request)
         self.log(url)
         return self.send_update_request(url, update_request)
+
+    def update_user_by_username(self, username, full_name=None, site_role=None, password=None,
+                                email=None):
+        user_luid = self.query_user_luid_by_username(username)
+        return self.update_user_by_luid(user_luid, full_name, site_role, password, email)
+
+    def update_user(self, username_or_luid, full_name=None, site_role=None, password=None,
+                    email=None):
+        if self.is_luid(username_or_luid):
+            return self.update_user_by_luid(username_or_luid, full_name, site_role, password, email)
+        else:
+            return self.update_user_by_username(username_or_luid, full_name, site_role, password, email)
 
     def update_datasource_by_luid(self, datasource_luid, new_datasource_name=None, new_project_luid=None,
                                   new_owner_luid=None):
@@ -877,6 +910,18 @@ class TableauRestApi:
         self.log(update_request)
         self.log(url)
         return self.send_update_request(url, update_request)
+
+    def update_datasource_by_name(self, datasource_name, new_datasource_name=None, new_project_luid=None,
+                                  new_owner_luid=None):
+        ds_luid = self.query_datasource_luid_by_name(datasource_name)
+        return self.update_datasource_by_luid(ds_luid, new_datasource_name, new_project_luid, new_owner_luid)
+
+    def update_datasource(self, name_or_luid, new_datasource_name=None, new_project_luid=None,
+                          new_owner_luid=None):
+        if self.is_luid(name_or_luid):
+            return self.update_datasource_by_luid(name_or_luid, new_datasource_name, new_project_luid, new_owner_luid)
+        else:
+            return self.update_datasource_by_name(name_or_luid, new_datasource_name, new_project_luid, new_owner_luid)
 
     def update_datasource_connection_by_luid(self, datasource_luid, new_server_address=None, new_server_port=None,
                                              new_connection_username=None, new_connection_password=None):
@@ -899,6 +944,16 @@ class TableauRestApi:
         self.log(update_request)
         self.log(url)
         return self.send_update_request(url, update_request)
+
+    def update_group_by_name(self, name, new_group_name):
+        group_luid = self.query_group_luid_by_name(name)
+        return self.update_group_by_luid(group_luid, new_group_name)
+
+    def update_group(self, name_or_luid, new_group_name):
+        if self.is_luid(name_or_luid):
+            return self.update_group_by_luid(name_or_luid, new_group_name)
+        else:
+            return self.update_group_by_name(name_or_luid, new_group_name)
 
     # AD group sync. Must specify the domain and the default site role for imported users
     def sync_ad_group_by_luid(self, group_luid, ad_group_name, ad_domain, default_site_role, sync_as_background=True):
@@ -941,8 +996,13 @@ class TableauRestApi:
         project_luid = self.query_project_luid_by_name(project_name)
         return self.update_project_by_luid(project_luid, new_project_name, new_project_description)
 
-        # Can only update the site you are signed into, so take site_luid from the object
+    def update_project(self, name_or_luid, new_project_name=None, new_project_description=None):
+        if self.is_luid(name_or_luid):
+            return self.update_project_by_luid(name_or_luid, new_project_name, new_project_description)
+        else:
+            return self.update_project_by_name(name_or_luid, new_project_name, new_project_description)
 
+    # Can only update the site you are signed into, so take site_luid from the object
     def update_current_site(self, site_name=None, content_url=None, admin_mode=None, user_quota=None,
                             storage_quota=None, disable_subscriptions=None, state=None):
         update_request = self.__build_site_request_xml(site_name, content_url, admin_mode, user_quota, storage_quota,
