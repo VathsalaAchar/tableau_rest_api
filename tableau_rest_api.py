@@ -1,28 +1,26 @@
-try:
-    # Python 3.x
-    from urllib.request import urlopen, request
-except:
-    # Python 2.x
-    import urllib, urllib2
+# Python 2.x only
+import urllib2
 
 # For parsing XML responses
-
-try:
-    from lxml import etree
-except ImportError:
-    import xml.etree.ElementTree as etree
+from lxml import etree
 
 # StringIO helps with lxml UTF8 parsing
 
 from StringIO import StringIO
-import math, time, random, os, re
+import math
+import time
+import random
+import os
+import re
 
 
 class TableauRestApi:
-    # Defines a class that represents a RESTful connection to Tableau Server.
+    # Defines a class that represents a RESTful connection to Tableau Server. Use full URL (http:// or https://)
     def __init__(self, server, username, password, site_content_url=""):
+        if server.find('http') == -1:
+            raise InvalidOptionException('Server URL must include http:// or https://')
         self.__server = server
-        self.__site = site_content_url
+        self._site_content_url = site_content_url
         self.__username = username
         self.__password = password
         self.__token = None  # Holds the login token from the Sign In call
@@ -196,7 +194,8 @@ class TableauRestApi:
     # Dict { capability_name : mode } into XML with checks for validity. Set type to 'workbook' or 'datasource'
     def build_capabilities_xml_from_dict(self, capabilities_dict, obj_type):
         if obj_type not in self.__permissionable_objects:
-            raise InvalidOptionException('objtype can only be "project", "workbook" or "datasource", was given {}'.format('obj_type'))
+            error_text = 'objtype can only be "project", "workbook" or "datasource", was given {}'
+            raise InvalidOptionException(error_text.format('obj_type'))
         xml = '<capabilities>\n'
         for cap in capabilities_dict:
             if capabilities_dict[cap] not in ['Allow', 'Deny']:
@@ -223,12 +222,12 @@ class TableauRestApi:
     #
 
     def signin(self):
-        if self.__site in ['default', '']:
-            login_payload = '<tsRequest><credentials name="{}" password="{}" ><site /></credentials></tsRequest>'.format(
-                self.__username, self.__password)
+        if self._site_content_url in ['default', '']:
+            login_payload = '<tsRequest><credentials name="{}" password="{}" >'.format(self.__username, self.__password)
+            login_payload += '<site /></credentials></tsRequest>'
         else:
-            login_payload = '<tsRequest><credentials name="{}" password="{}" ><site contentUrl="{}" /></credentials></tsRequest>'.format(
-                self.__username, self.__password, self.__site)
+            login_payload = '<tsRequest><credentials name="{}" password="{}" >'.format(self.__username, self.__password)
+            login_payload += '<site contentUrl="{}" /></credentials></tsRequest>'.format(self._site_content_url)
         url = self.build_api_url("auth/signin", login=True)
         self.log(url)
         api = RestXmlRequest(url, False, self.__logger)
@@ -297,7 +296,7 @@ class TableauRestApi:
             # Return for counter
             return 1
         except RecoverableHTTPException as e:
-            self.log('Recoverable HTTP Exception Response {}, Tableau Code {}'.format(e.http_code, e.tableau_error_code))
+            self.log('Non fatal HTTP Exception Response {}, Tableau Code {}'.format(e.http_code, e.tableau_error_code))
             if e.tableau_error_code in [404003]:
                 self.log('Delete action did not find the resouce. Consider successful, keep going')
         except:
@@ -728,12 +727,14 @@ class TableauRestApi:
         return new_group.xpath('//t:group', namespaces=self.__ns_map)[0].get("id")
 
     # Creating a synced ad group is completely different, use this method
-    # The luid is only available in the Response header if bg sync. Nothing else is passed this way -- not sure how to expose
-    def create_group_from_ad_group(self, ad_group_name, ad_domain_name, default_site_role='Unlicensed', sync_as_background=True):
+    # The luid is only available in the Response header if bg sync. Nothing else is passed this way -- how to expose?
+    def create_group_from_ad_group(self, ad_group_name, ad_domain_name, default_site_role='Unlicensed',
+                                   sync_as_background=True):
         if default_site_role not in self.__site_roles:
             raise InvalidOptionException('"{}" is not an acceptable site role'.format(default_site_role))
         add_request = '<tsRequest><group name="{}">'.format(ad_group_name)
-        add_request += '<import source="ActiveDirectory" domainName="{}" siteRole="{}" />'.format(ad_domain_name, default_site_role)
+        add_request += '<import source="ActiveDirectory" domainName="{}" siteRole="{}" />'.format(ad_domain_name,
+                                                                                                  default_site_role)
         add_request += '</group></tsRequest>'
         self.log(add_request)
         url = self.build_api_url("groups/?asJob={}".format(str(sync_as_background).lower()))
@@ -772,10 +773,11 @@ class TableauRestApi:
             raise AlreadyExistsException("Site Name '" + new_site_name + "' already exists on server", new_site_name)
         site_content_urls = self.query_all_site_content_urls()
         if new_content_url in site_content_urls:
-            raise AlreadyExistsException("Content URL '" + new_content_url + "' already exists on server", new_content_url)
-        add_request = self.__build_site_request_xml(new_site_name, new_content_url, admin_mode, user_quota, storage_quota,
-                                                    disable_subscriptions)
-        url = self.build_api_url("sites/", login=True)  # Site actions drop back out of the site ID hierarchy like a login
+            raise AlreadyExistsException("Content URL '{}' already exists on server".format(new_content_url),
+                                         new_content_url)
+        add_request = self.__build_site_request_xml(new_site_name, new_content_url, admin_mode, user_quota,
+                                                    storage_quota, disable_subscriptions)
+        url = self.build_api_url("sites/", login=True)  # Site actions drop back out of the site ID hierarchy like login
         self.log(add_request)
         self.log(url)
         new_site = self.send_add_request(url, add_request)
@@ -824,7 +826,8 @@ class TableauRestApi:
         # Check existence of user
         self.query_user_by_luid(user_luid)
         self.query_workbook_by_luid(wb_luid)
-        request = '<tsRequest><favorite label="{}"><workbook id="{}" /></favorite></tsRequest>'.format(favorite_name, wb_luid)
+        request = '<tsRequest><favorite label="{}"><workbook id="{}" />'.format(favorite_name, wb_luid)
+        request += '</favorite></tsRequest>'
         url = self.build_api_url("favorites/{}".format(user_luid))
         return self.send_update_request(url, request)
 
@@ -832,7 +835,8 @@ class TableauRestApi:
         # Check existence of user
         self.query_user_by_luid(user_luid)
         # self.query_views_by_luid(wb_luid) # Should figured out if view exists here
-        request = '<tsRequest><favorite label="{}"><view id="{}" /></favorite></tsRequest>'.format(favorite_name, view_luid)
+        request = '<tsRequest><favorite label="{}"><view id="{}" />'.format(favorite_name, view_luid)
+        request += '</favorite></tsRequest>'
         url = self.build_api_url("favorites/{}".format(user_luid))
         return self.send_update_request(url, request)
 
@@ -958,18 +962,21 @@ class TableauRestApi:
     # AD group sync. Must specify the domain and the default site role for imported users
     def sync_ad_group_by_luid(self, group_luid, ad_group_name, ad_domain, default_site_role, sync_as_background=True):
         if sync_as_background not in [True, False]:
-            raise InvalidOptionException(
-                "'{}' is not a valid option for sync_as_background. Use True or False (boolean)".format(str(sync_as_background)).lower())
+            error = "'{}' passed for sync_as_background. Use True or False".format(str(sync_as_background).lower())
+            raise InvalidOptionException(error)
+
         if default_site_role not in self.__site_roles:
             raise InvalidOptionException("'{}' is not a valid site role in Tableau".format(default_site_role))
         # Check that the group exists
         self.query_group_by_luid(group_luid)
-        update_request = '<tsRequest><group name="{}"><import source="ActiveDirectory" domainName="{}" siteRole="{}" /></group></tsRequest>'.format(
-            ad_group_name, ad_domain, default_site_role)
+        request = '<tsRequest><group name="{}">'.format(ad_group_name)
+        request += '<import source="ActiveDirectory" domainName="{}" siteRole="{}" />'.format(ad_domain,
+                                                                                              default_site_role)
+        request += '</group></tsRequest>'
         url = self.build_api_url("groups/{}".format(group_luid) + "?asJob={}".format(str(sync_as_background)).lower())
-        self.log(update_request)
+        self.log(request)
         self.log(url)
-        response = self.send_update_request(url, update_request)
+        response = self.send_update_request(url, request)
         # Response is different from immediate to background update. job ID lets you track progress on background
         if sync_as_background is True:
             job = response.xpath('//t:job', namespaces=self.__ns_map)
@@ -1168,7 +1175,8 @@ class TableauRestApi:
                     if obj_type == 'workbook' and cap not in self.__workbook_capabilities:
                         self.log("'{}' is not a valid capability for a workbook".format(cap))
 
-                    url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/{}".format(obj_type, obj_luid, luid_type, luid, cap, permissions_dict[cap]))
+                    url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/{}".format(obj_type, obj_luid, luid_type,
+                                                                                      luid, cap, permissions_dict[cap]))
                     self.send_delete_request(url)
 
     # Permissions delete -- this is "Delete Workbook Permissions" for users or groups
@@ -1231,8 +1239,8 @@ class TableauRestApi:
 
     def publish_workbook(self, workbook_filename, workbook_name, project_luid, overwrite=False,
                          connection_username=None, connection_password=None, save_credentials=True):
-        xml = self.publish_content('workbook', workbook_filename, workbook_name, project_luid, overwrite, connection_username,
-                                   connection_password, save_credentials)
+        xml = self.publish_content('workbook', workbook_filename, workbook_name, project_luid, overwrite,
+                                   connection_username, connection_password, save_credentials)
         workbook = xml.xpath('//t:workbook', namespaces=self.__ns_map)
         return workbook[0].get('id')
 
@@ -1305,11 +1313,9 @@ class TableauRestApi:
                 content_type, content_filename)
             publish_request += 'Content-Type: application/octet-stream\r\n\r\n'
 
+            # Content needs to be read unencoded from the file
             content = content_file.read()
-            # Convert utf-8 encoding to regular
-            #if file_extension == 'twb':
-                #content = content.decode('utf-8')
-
+            # Add to string as regular binary, no encoding
             publish_request += content
 
             publish_request += "\r\n--{}--".format(boundary_string)
@@ -1529,7 +1535,7 @@ class RestXmlRequest:
                 # Convert the internal part of the XML response that is not Pagination back into xml text
                 # Then convert innermost part into a new XML object
                 new_xml_text_lines = etree.tostring(full_xml_obj).split("\n")
-                # First and last tags should be removed (spit back with namespace tags that will be included via start text
+                # First and last tags should be removed (spit back with namespace tags that are included via start text
                 a = new_xml_text_lines[1:]
                 xml_text_lines = a[:-2]
 
