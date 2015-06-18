@@ -1169,7 +1169,7 @@ class TableauRestApi:
             except InvalidOptionException as e:
                 self.log(e.msg)
                 raise
-            self.add_permissions_by_luids(obj_type.lower(), obj_luid, gcap_obj_list)
+            self.add_permissions_by_gcap_obj_list(obj_type.lower(), obj_luid, gcap_obj_list)
 
     # Special permissions methods
     # Take the permissions from one object (project most likely) and assign to other content
@@ -1322,13 +1322,13 @@ class TableauRestApi:
 
                     if permissions_dict.get(cap) == 'Allow':
                         # Delete Allow
-                        url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/Allow".format(obj_type, obj_luid, luid_type,
-                                                                                             luid, cap))
+                        url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/Allow".format(obj_type, obj_luid,
+                                                                                             luid_type, luid, cap))
                         self.send_delete_request(url)
                     elif permissions_dict.get(cap) == 'Deny':
                         # Delete Deny
-                        url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/Deny".format(obj_type, obj_luid, luid_type,
-                                                                                            luid, cap))
+                        url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/Deny".format(obj_type, obj_luid,
+                                                                                            luid_type, luid, cap))
                         self.send_delete_request(url)
                     else:
                         self.log('{} set to none, no action'.format(cap))
@@ -1701,6 +1701,7 @@ class RestXmlRequest:
         elif self.__response_type in ['binary', 'png']:
             self.log('Binary response (binary or png) rather than XML')
             return True
+
 
 # Represents the GranteeCapabilities from any given
 class GranteeCapabilities:
