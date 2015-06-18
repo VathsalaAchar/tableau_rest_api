@@ -1156,6 +1156,21 @@ class TableauRestApi:
                 raise
             self.add_permissions_by_luids(obj_type.lower(), obj_luid, luids, permissions_dict, luid_type)
 
+    def update_permissions_by_gcap_obj_list(self, obj_type, obj_luid_s, gcap_obj_list):
+        obj_luids = self.to_list(obj_luid_s)
+        if obj_type.lower() not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "project", "datasource" or "workbook"')
+        # Do this object by object, so that the delete and the assign are all together
+        self.log('Updating permissions for {} LUIDs'.format(str(len(obj_luids))))
+        for obj_luid in obj_luids:
+            try:
+                self.log('Deleting all permissions for {}'.format(obj_luid))
+                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid)
+            except InvalidOptionException as e:
+                self.log(e.msg)
+                raise
+            self.add_permissions_by_luids(obj_type.lower(), obj_luid, gcap_obj_list)
+
     # Special permissions methods
     # Take the permissions from one object (project most likely) and assign to other content
     # Requires clearing all permissions on an object
@@ -1742,6 +1757,15 @@ class GranteeCapabilities:
             else:
                 raise InvalidOptionException('"{}" is not a capability in REST API or Server'.format(capability_name))
         self.__capabilities[capability_name] = mode
+
+    def set_capability_to_unspecified(self, capability_name):
+        if capability_name not in self.__capabilities:
+            # If it's the Tableau UI naming, translate it over
+            if capability_name in self.__server_to_rest_capability_map:
+                capability_name = self.__server_to_rest_capability_map[capability_name]
+            else:
+                raise InvalidOptionException('"{}" is not a capability in REST API or Server'.format(capability_name))
+        self.__capabilities[capability_name] = None
 
     def get_capabilities_dict(self):
         return self.__capabilities
