@@ -924,6 +924,26 @@ class TableauRestApi:
             url = self.build_api_url("{}s/{}/permissions".format(obj_type, obj_luid))
             self.send_update_request(url, request)
 
+    def add_permissions_by_gcap_obj_list(self, obj_type, obj_luid_s, gcap_obj_list):
+        if obj_type not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "workbook","datasource" or "project"')
+
+        obj_luids = self.to_list(obj_luid_s)
+
+        for obj_luid in obj_luids:
+            request = "<tsRequest><permissions><{} id='{}' />".format(obj_type, obj_luid)
+            for gcap_obj in gcap_obj_list:
+                gcap_luid = gcap_obj.get_luid()
+                gcap_obj_type = gcap_obj.get_obj_type()
+                capabilities_dict = gcap_obj.get_capabilities_dict()
+                capabilities_xml = self.build_capabilities_xml_from_dict(capabilities_dict, obj_type)
+                request += "<granteeCapabilities><{} id='{}' />".format(gcap_obj_type, gcap_luid)
+                request += capabilities_xml
+                request += "</granteeCapabilities>"
+            request += "</permissions></tsRequest>"
+            url = self.build_api_url("{}s/{}/permissions".format(obj_type, obj_luid))
+            self.send_update_request(url, request)
+
     #
     # Update Methods
     #
@@ -1158,11 +1178,7 @@ class TableauRestApi:
             # Delete all first clears the object to have them added
             self.delete_all_permissions_by_luids(dest_type, dest_obj_luid)
             # Add each set of capabilities to the cleared object
-            for gcap_obj in capabilities_list:
-                gcap_luid = gcap_obj.get_luid()
-                gcap_obj_type = gcap_obj.get_obj_type()
-                capabilities_dict = gcap_obj.get_capabilities_dict()
-                self.add_permissions_by_luids(dest_type, dest_obj_luid, gcap_luid, capabilities_dict, gcap_obj_type)
+            self.add_permissions_by_gcap_obj_list(dest_type, dest_obj_luid, capabilities_list)
 
     # Pulls the permissions from the project, then applies them to all the content in the project
     def sync_project_permissions_to_contents(self, project_name_or_luid):
