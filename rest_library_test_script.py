@@ -1,12 +1,13 @@
-import tableau_rest_api
+from tableau_rest_api.tableau_rest_api import *
 import urllib2
 import time
 
-# User your 
+# Use your own server credentials
 username = ''
 password = ''
-tab_srv = rest_api.TableauRestApi('http://127.0.0.1', username, password, 'default')
-logger = rest_api.Logger('rest_test.log')
+server = 'http://'
+tab_srv = TableauRestApi(server, username, password, 'default')
+logger = Logger('rest_test.log')
 tab_srv.enable_logging(logger)
 
 tab_srv.signin()
@@ -17,9 +18,9 @@ try:
     # Determine if site exists with current name. Delete if it does.
     # Then create new site with the same name and contentUrl
     try:
-        delete_login_content_url = tab_srv.query_site_content_url_by_site_name('Programmatic Site 2')
+        delete_login_content_url = tab_srv.query_site_content_url_by_site_name('Brogrammatic Site')
         print 'Received content_url to delete ' + delete_login_content_url
-        tab_srv_2 = rest_api.TableauRestApi('http://127.0.0.1', username, password, delete_login_content_url)
+        tab_srv_2 = TableauRestApi(server, username, password, delete_login_content_url)
         tab_srv_2.enable_logging(logger)
         tab_srv_2.signin()
         print 'Signed in successfully to ' + delete_login_content_url
@@ -31,7 +32,7 @@ try:
         print 'Attempting to delete current site'
         tab_srv_2.delete_current_site()
         print "Deleted site " + new_site_name
-    except rest_api.NoMatchFoundException as e:
+    except NoMatchFoundException as e:
         print e.msg
         print "Cannot delete site that does not exist"
     except Exception as e:
@@ -43,7 +44,7 @@ try:
         tab_srv.log('Logging with the log function')
         new_site_id = tab_srv.create_site(new_site_name, new_site_content_url)
         print 'Created new site ' + new_site_id
-    except rest_api.AlreadyExistsException as e:
+    except AlreadyExistsException as e:
         print e.msg
         print "Cannot create new site, exiting"
         exit()
@@ -51,7 +52,7 @@ try:
         raise
 
     # Once we've created the site, we need to sign into it to do anything else
-    tab_srv_3 = rest_api.TableauRestApi('http://127.0.0.1', username, password, new_site_content_url)
+    tab_srv_3 = TableauRestApi(server, username, password, new_site_content_url)
     tab_srv_3.enable_logging(logger)
     try:
         tab_srv_3.signin()
@@ -60,7 +61,7 @@ try:
 
         # Update the site name
         print 'Updating site name'
-        tab_srv_3.update_current_site('Programmatic Site 2')
+        tab_srv_3.update_current_site('Brogrammatic Site')
 
         projects_to_create = ['Sandbox', 'Approved Datasources', 'Production']
         for project in projects_to_create:
@@ -94,18 +95,23 @@ try:
         # Change the Sandbox name
         tab_srv_3.update_project_by_name('Sandbox', 'Protected Sandbox', 'This is only for important people')
 
-        group_luids = []
-        for group in groups_dict:
-            group_luids.append(groups_dict[group])
-        sandbox_permissions = {'ChangePermissions': 'Allow', 'Connect': 'Allow', 'Delete': 'Deny',
-                               'ExportXml': 'Deny', 'Read': 'Allow', 'Write': 'Deny', 'ExportImage': 'Allow',
-                               'ExportData': 'Allow', 'WebAuthoring': 'Allow', 'ViewComments': 'Allow',
-                               'ShareView': 'Allow', 'AddComment': 'Allow', 'Filter': 'Allow',
-                               'ChangeHierarchy': 'Allow'}
-        print 'Adding permissions for Sandbox for all groups'
-        #tab_srv_3.add_permissions_by_luids('project', sandbox_luid, group_luids, sandbox_permissions, 'group')
+        group_luids = groups_dict.values()
+        gcap_obj_list = []
+        for group_luid in group_luids:
+            gcap = GranteeCapabilities('group', group_luid)
+            gcap.set_capability('Read', 'Allow')
+            gcap.set_capability('Filter', 'Allow')
+            gcap.set_capability('ShareView', 'Allow')
+            gcap.set_capability('Delete', 'Allow')
+            gcap.set_capability('Write', 'Deny')
+            gcap.set_capability('View Underlying Data', 'Deny')
+            gcap_obj_list.append(gcap)
 
-        tab_srv_3.update_permissions_by_luids('project', sandbox_luid, group_luids, sandbox_permissions, 'group')
+        print 'Adding permissions to Sandbox'
+        tab_srv_3.update_permissions_by_gcap_obj_list('project', sandbox_luid, gcap_obj_list)
+
+        print 'Updating the permissions on the Sandbox'
+        tab_srv_3.update_permissions_by_gcap_obj_list('project', sandbox_luid, gcap_obj_list)
 
         # Create some fake users to assign to groups
         new_user_luids = []
@@ -133,11 +139,13 @@ try:
 
             print "Querying project permissions"
             project_permissions = tab_srv_3.query_project_permissions_by_luid(project_luid)
-            print project_permissions
+            # print project_permissions
 
             # Publish a datasource to the Sandbox project
             print 'Publishing datasource to Protected Sandbox'
-            new_ds_luid = tab_srv_3.publish_datasource('Flights Data.tde', 'Flights Data', project_luid, True)
+            tde_filename = 'Flights Data.tde'
+            tde_content_name = 'Flights Data'
+            new_ds_luid = tab_srv_3.publish_datasource(tde_filename, tde_content_name, project_luid, True)
             print 'Publishing as {}'.format(new_ds_luid)
             print "Query the datasource"
             ds_xml = tab_srv_3.query_datasource_by_luid(new_ds_luid)
@@ -149,21 +157,23 @@ try:
             print "Querying All datasources"
             datasources = tab_srv_3.query_datasources()
 
-            print 'Publishing workbook to PRoduction'
+            print 'Publishing TWBX workbook to PRoduction'
             production_luid = tab_srv_3.query_project_luid_by_name('Production')
-            new_wb_luid = tab_srv_3.publish_workbook('Flights Data.twbx', 'Flights Workbooks', production_luid, True)
+            twbx_filename = 'Flights Data.twbx' # Replace with your own test file
+            twbx_content_name = 'Flights Workbooks' # Replace with your own name
+            new_wb_luid = tab_srv_3.publish_workbook(twbx_filename, twbx_content_name, production_luid, True)
             print 'Moving workbook to Sandbox'
-            tab_srv_3.update_workbook_by_luid(new_wb_luid, sandbox_luid, False, True)
+            tab_srv_3.update_workbook_by_luid(new_wb_luid, sandbox_luid, show_tabs=True)
             print "querying workbook"
             wb_xml = tab_srv_3.query_workbook_by_luid(new_wb_luid)
 
             print "assign permissions to workbook"
-            tab_srv_3.add_permissions_by_luids('workbook', new_wb_luid, group_luids, sandbox_permissions, 'group')
+            tab_srv_3.add_permissions_by_gcap_obj_list('workbook', new_wb_luid, gcap_obj_list)
 
             print "Assigning permission to datasource"
             try:
-                tab_srv_3.add_permissions_by_luids('datasource', new_ds_luid, group_luids, sandbox_permissions, 'group')
-            except rest_api.InvalidOptionException as e:
+                tab_srv_3.add_permissions_by_gcap_obj_list('datasource', new_ds_luid, gcap_obj_list)
+            except InvalidOptionException as e:
                 print e.msg
             # print "Deleting the published DS"
             # tab_srv_3.delete_datasources_by_luid(new_ds_luid)
@@ -179,8 +189,8 @@ try:
             wb_permissions = tab_srv_3.query_workbook_permissions_by_luid(new_wb_luid)
             print wb_permissions
 
-            print "Adding permissions to workbook"
-            tab_srv_3.add_permissions_by_luids('workbook', new_wb_luid, group_luids, sandbox_permissions, 'group')
+            # print "Adding permissions to workbook"
+            # tab_srv_3.add_permissions_by_luids('workbook', new_wb_luid, group_luids, sandbox_permissions, 'group')
 
             # print "Deleting Permissions from workbook"
             # tab_srv_3.delete_permissions_by_luids('workbook', new_wb_luid, group_luids, sandbox_permissions, 'group')
@@ -230,6 +240,7 @@ try:
             print "Deleting workbook from favorites for bhowell"
             tab_srv_3.delete_workbooks_from_user_favorites_by_luid(new_wb_luid, tab_srv_3.query_user_luid_by_username('user1'))
 
+            # All of these below are just tests of the different files you can upload
             print "Publishing a TWB"
             twb_luid = tab_srv_3.publish_workbook('TWB to Publish.twb', 'TWB Publish Test', project_luid)
 
@@ -239,8 +250,8 @@ try:
             print "Publishing a TDS"
             tds_luid = tab_srv_3.publish_datasource('TDS to Publish SS.tds', 'SS TDS', project_luid)
 
-            # print "Publishing TDS with credentials"
-            # tds_cred_luid = tab_srv_3.publish_datasource('TDS with Credentials.tds', 'TDS w Creds', project_luid, True, db_username, db_password)
+            print "Publishing TDS with credentials -- reordered args"
+            tds_cred_luid = tab_srv_3.publish_datasource('TDS with Credentials.tds', 'TDS w Creds', project_luid, connection_username='postgres', overwrite=True, connection_password='')
 
             # print "Update Datasource connection"
             # tab_srv_3.update_datasource_connection_by_luid(tds_cred_luid, 'localhost', '5432', db_username, db_password)
@@ -251,12 +262,12 @@ try:
             print "Publishing a TDSX"
             tab_srv_3.publish_datasource('TDSX to Publish.tdsx', 'TDSX Publish Test', project_luid)
 
-        except rest_api.NoMatchFoundException as e:
+        except NoMatchFoundException as e:
                 print e.msg
         except:
             raise
 
-    except rest_api.NoMatchFoundException as e:
+    except NoMatchFoundException as e:
         print e.msg
     except:
         raise

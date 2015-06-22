@@ -31,8 +31,9 @@ class TableauRestApi:
         self.__last_response_content_type = None
         self.__luid_pattern = r"[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*"
         self.__tableau_namespace = 'http://tableausoftware.com/api'
-        self.__datasource_capabilities = ('ChangePermissions', 'Connect', 'Delete', 'ExportXml', 'Read', 'Write')
-        self.__workbook_capabilities = (
+        self.__project_caps = ('ProjectLeader', )
+        self.__datasource_caps = ('ChangePermissions', 'Connect', 'Delete', 'ExportXml', 'Read', 'Write')
+        self.__workbook_caps = (
             'AddComment', 'ChangeHierarchy', 'ChangePermissions', 'Delete', 'ExportData', 'ExportImage', 'ExportXml',
             'Filter', 'Read', 'ShareView', 'ViewComments', 'ViewUnderlyingData', 'WebAuthoring', 'Write')
         self.__site_roles = (
@@ -47,7 +48,7 @@ class TableauRestApi:
                                                 'Delete': 'Delete',
                                                 'View Summary Data': 'ExportData',
                                                 'Export Image': 'ExportImage',
-                                                'Download': 'ExportXML',
+                                                'Download': 'ExportXml',
                                                 'Filter': 'Filter',
                                                 'Project Leader': 'ProjectLeader',
                                                 'View': 'Read',
@@ -119,6 +120,10 @@ class TableauRestApi:
                 return False
         else:
             return False
+
+    def get_lxml_ns_prefix(self):
+        return '{' + self.__ns_map['t'] + '}'
+
     #
     # REST API Helper Methods
     #
@@ -198,24 +203,53 @@ class TableauRestApi:
             raise InvalidOptionException(error_text.format('obj_type'))
         xml = '<capabilities>\n'
         for cap in capabilities_dict:
+            # Skip if the capability is set to None
+            if capabilities_dict[cap] is None:
+                continue
             if capabilities_dict[cap] not in ['Allow', 'Deny']:
-                raise InvalidOptionException('Capability mode can only be "Allow" or "Deny" (case-sensitive)')
+                raise InvalidOptionException('Capability mode can only be "Allow",  "Deny" (case-sensitive)')
             if obj_type == 'project':
-                if cap not in self.__datasource_capabilities + self.__workbook_capabilities:
+                if cap not in self.__datasource_caps + self.__workbook_caps + self.__project_caps:
                     raise InvalidOptionException('{} is not a valid capability in the REST API'.format(cap))
             if obj_type == 'datasource':
                 # Ignore if not available for datasource
-                if cap not in self.__datasource_capabilities:
+                if cap not in self.__datasource_caps:
                     self.log('{} is not a valid capability for a datasource'.format(cap))
                     continue
             if obj_type == 'workbook':
                 # Ignore if not available for workbook
-                if cap not in self.__workbook_capabilities:
+                if cap not in self.__workbook_caps:
                     self.log('{} is not a valid capability for a workbook'.format(cap))
                     continue
             xml += '<capability name="{}" mode="{}" />'.format(cap, capabilities_dict[cap])
         xml += '</capabilities>'
         return xml
+
+    # Turns lxml that is returned when asking for permissions into a bunch of GranteeCapabilities objecfts
+    def convert_capabilities_xml_into_obj_list(self, lxml_obj):
+        obj_list = []
+        xml = lxml_obj.xpath('//t:granteeCapabilities', namespaces=self.__ns_map)
+        if len(xml) == 0:
+            raise NoMatchFoundException("No granteeCapabilities tags found")
+        else:
+            for gcaps in xml:
+                for tags in gcaps:
+                    # Namespace fun
+                    if tags.tag == '{}group'.format(self.get_lxml_ns_prefix()):
+                        luid = tags.get('id')
+                        gcap_obj = GranteeCapabilities('group', luid)
+                        self.log('group {}'.format(luid))
+                    elif tags.tag == '{}user'.format(self.get_lxml_ns_prefix()):
+                        luid = tags.get('id')
+                        gcap_obj = GranteeCapabilities('user', luid)
+                        self.log('user {}'.format(luid))
+                    elif tags.tag == '{}capabilities'.format(self.get_lxml_ns_prefix()):
+                        for caps in tags:
+                            self.log(caps.get('name') + ' : ' + caps.get('mode'))
+                            gcap_obj.set_capability(caps.get('name'), caps.get('mode'))
+                obj_list.append(gcap_obj)
+            self.log('Gcap object list has ' + str(len(obj_list)) + ' items')
+            return obj_list
 
     #
     # Sign-in and Sign-out
@@ -358,6 +392,16 @@ class TableauRestApi:
         # Name
         else:
             return self.query_datasource_by_name(name_or_luid)
+
+    def query_datasources_in_project(self, project_name_or_luid):
+        if self.is_luid(project_name_or_luid):
+            project_luid = self.query_project_by_luid(project_name_or_luid)
+        else:
+            project_luid = self.query_project_luid_by_name(project_name_or_luid)
+        datasources = self.query_datasources()
+        # This brings back the datasource itself
+        ds_in_project = datasources.xpath('//t:project[@id="{}"]/..'.format(project_luid), namespaces=self.__ns_map)
+        return ds_in_project
 
     def query_datasource_permissions_by_luid(self, luid):
         return self.query_resource('datasources/{}/permissions'.format(luid))
@@ -543,6 +587,23 @@ class TableauRestApi:
             return self.query_workbook_by_luid(wb_luid)
         else:
             raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
+
+    def query_workbooks_in_project_for_username(self, project_name_or_luid, username):
+        if self.is_luid(project_name_or_luid):
+            project_luid = self.query_project_by_luid(project_name_or_luid)
+        else:
+            project_luid = self.query_project_luid_by_name(project_name_or_luid)
+        workbooks = self.query_workbooks_by_username(username)
+        # This brings back the workbook itself
+        wbs_in_project = workbooks.xpath('//t:project[@id="{}"]/..'.format(project_luid), namespaces=self.__ns_map)
+        return wbs_in_project
+
+    def query_workbooks_in_project(self, project_name_or_luid):
+        return self.query_workbooks_in_project_for_username(project_name_or_luid, self.__username)
+
+    # Assume the current logged in user
+    def query_workbook_by_name(self, wb_name):
+        return self.query_workbook_for_username_by_workbook_name(self.__username, wb_name)
 
     def query_workbook_luid_for_username_by_workbook_name(self, username, wb_name):
         workbooks = self.query_workbooks_by_username(username)
@@ -851,11 +912,32 @@ class TableauRestApi:
         luids = self.to_list(luid_s)
         obj_luids = self.to_list(obj_luid_s)
 
+        self.log(permissions_dict)
         capabilities_xml = self.build_capabilities_xml_from_dict(permissions_dict, obj_type)
         for obj_luid in obj_luids:
             request = "<tsRequest><permissions><{} id='{}' />".format(obj_type, obj_luid)
             for luid in luids:
                 request += "<granteeCapabilities><{} id='{}' />".format(luid_type, luid)
+                request += capabilities_xml
+                request += "</granteeCapabilities>"
+            request += "</permissions></tsRequest>"
+            url = self.build_api_url("{}s/{}/permissions".format(obj_type, obj_luid))
+            self.send_update_request(url, request)
+
+    def add_permissions_by_gcap_obj_list(self, obj_type, obj_luid_s, gcap_obj_list):
+        if obj_type not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "workbook","datasource" or "project"')
+
+        obj_luids = self.to_list(obj_luid_s)
+
+        for obj_luid in obj_luids:
+            request = "<tsRequest><permissions><{} id='{}' />".format(obj_type, obj_luid)
+            for gcap_obj in gcap_obj_list:
+                gcap_luid = gcap_obj.get_luid()
+                gcap_obj_type = gcap_obj.get_obj_type()
+                capabilities_dict = gcap_obj.get_capabilities_dict()
+                capabilities_xml = self.build_capabilities_xml_from_dict(capabilities_dict, obj_type)
+                request += "<granteeCapabilities><{} id='{}' />".format(gcap_obj_type, gcap_luid)
                 request += capabilities_xml
                 request += "</granteeCapabilities>"
             request += "</permissions></tsRequest>"
@@ -1063,8 +1145,70 @@ class TableauRestApi:
         luids = self.to_list(luid_s)
         if obj_type.lower() not in self.__permissionable_objects:
             raise InvalidOptionException('obj_type must be "project", "datasource" or "workbook"')
-        self.delete_permissions_by_luids(obj_type, obj_luids, luids, permissions_dict, luid_type)
-        self.add_permissions_by_luids(obj_type, obj_luids, luids, permissions_dict, luid_type)
+        # Do this object by object, so that the delete and the assign are all together
+        self.log('Updating permissions for {} LUIDs'.format(str(len(obj_luids))))
+        for obj_luid in obj_luids:
+            try:
+                self.log('Deleting all permissions for {}'.format(obj_luid))
+                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid)
+            except InvalidOptionException as e:
+                self.log(e.msg)
+                raise
+            self.add_permissions_by_luids(obj_type.lower(), obj_luid, luids, permissions_dict, luid_type)
+
+    def update_permissions_by_gcap_obj_list(self, obj_type, obj_luid_s, gcap_obj_list):
+        obj_luids = self.to_list(obj_luid_s)
+        if obj_type.lower() not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "project", "datasource" or "workbook"')
+        # Do this object by object, so that the delete and the assign are all together
+        self.log('Updating permissions for {} LUIDs'.format(str(len(obj_luids))))
+        for obj_luid in obj_luids:
+            try:
+                self.log('Deleting all permissions for {}'.format(obj_luid))
+                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid)
+            except InvalidOptionException as e:
+                self.log(e.msg)
+                raise
+            self.add_permissions_by_gcap_obj_list(obj_type.lower(), obj_luid, gcap_obj_list)
+
+    # Special permissions methods
+    # Take the permissions from one object (project most likely) and assign to other content
+    # Requires clearing all permissions on an object
+    def replicate_content_permissions(self, obj_luid, obj_type, dest_luid_s, dest_type):
+        dest_obj_luids = self.to_list(dest_luid_s)
+        if obj_type.lower() not in self.__permissionable_objects:
+            raise InvalidOptionException('obj_type must be "project", "datasource" or "workbook"')
+        if dest_type.lower() not in self.__permissionable_objects:
+            raise InvalidOptionException('dest_type must be "project", "datasource" or "workbook"')
+        if obj_type == 'project':
+            permissions_lxml = self.query_project_permissions(obj_luid)
+        elif obj_type == 'datasource':
+            permissions_lxml = self.query_datasource_permissions(obj_luid)
+        elif obj_type == 'workbook':
+            permissions_lxml = self.query_workbook_permissions_by_luid(obj_luid)
+        else:
+            raise InvalidOptionException('obj_type or dest_type not set correctly')
+        capabilities_list = self.convert_capabilities_xml_into_obj_list(permissions_lxml)
+        for dest_obj_luid in dest_obj_luids:
+            # Delete all first clears the object to have them added
+            self.delete_all_permissions_by_luids(dest_type, dest_obj_luid)
+            # Add each set of capabilities to the cleared object
+            self.add_permissions_by_gcap_obj_list(dest_type, dest_obj_luid, capabilities_list)
+
+    # Pulls the permissions from the project, then applies them to all the content in the project
+    def sync_project_permissions_to_contents(self, project_name_or_luid):
+        if self.is_luid(project_name_or_luid):
+            project_luid = project_name_or_luid
+        else:
+            project_luid = self.query_project_luid_by_name(project_name_or_luid)
+        wbs_in_project = self.query_workbooks_in_project(project_name_or_luid)
+        datasources_in_project = self.query_datasources_in_project(project_name_or_luid)
+        self.log('Replicating permissions down to workbooks')
+        wb_dict = self.convert_xml_list_to_name_id_dict(wbs_in_project)
+        self.replicate_content_permissions(project_luid, 'project', wb_dict.values(), 'workbook')
+        self.log('Replicating permissions down to datasource')
+        ds_dict = self.convert_xml_list_to_name_id_dict(datasources_in_project)
+        self.replicate_content_permissions(project_luid, 'project', ds_dict.values(), 'datasource')
 
     #
     # Delete methods
@@ -1151,8 +1295,9 @@ class TableauRestApi:
             self.log("Removing user from site via DELETE on " + url)
             self.send_delete_request(url)
 
-    # Flexible delete. dict { capability_name : capability_mode } 'Allow' or 'Deny'
-    # Assumes group because you should be doing all your security by groups instead of individuals
+    # You can throw in a cap_dict { capability_name : capability_mode } 'Allow' or 'Deny' but
+    # It ignores and atetempts to delete both Allow and Deny and just ignore any error
+    # Default is group because you should be doing all your security by groups instead of individuals
     def delete_permissions_by_luids(self, obj_type, obj_luid_s, luid_s, permissions_dict, luid_type='group'):
         if luid_type not in ['group', 'user']:
             raise InvalidOptionException("luid_type can only be 'group' or 'user'")
@@ -1163,60 +1308,56 @@ class TableauRestApi:
         obj_luids = self.to_list(obj_luid_s)
 
         for luid in luids:
+            self.log('Deleting for LUID {}'.format(luid))
             for obj_luid in obj_luids:
+                self.log('Deleting for object LUID {}'.format(luid))
                 # Check capabiltiies are allowed
                 for cap in permissions_dict:
-                    if permissions_dict[cap] not in ['Allow', 'Deny']:
-                        raise InvalidOptionException("Capability mode must be 'Allow' or 'Deny'")
-                    if cap not in self.__workbook_capabilities + self.__datasource_capabilities:
+                    if cap not in self.__workbook_caps + self.__datasource_caps + self.__project_caps:
                         raise InvalidOptionException("'{}' is not a capability in the REST API".format(cap))
-                    if obj_type == 'datasource' and cap not in self.__datasource_capabilities:
+                    if obj_type == 'datasource' and cap not in self.__datasource_caps:
                         self.log("'{}' is not a valid capability for a datasource".format(cap))
-                    if obj_type == 'workbook' and cap not in self.__workbook_capabilities:
+                    if obj_type == 'workbook' and cap not in self.__workbook_caps:
                         self.log("'{}' is not a valid capability for a workbook".format(cap))
 
-                    url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/{}".format(obj_type, obj_luid, luid_type,
-                                                                                      luid, cap, permissions_dict[cap]))
-                    self.send_delete_request(url)
+                    if permissions_dict.get(cap) == 'Allow':
+                        # Delete Allow
+                        url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/Allow".format(obj_type, obj_luid,
+                                                                                             luid_type, luid, cap))
+                        self.send_delete_request(url)
+                    elif permissions_dict.get(cap) == 'Deny':
+                        # Delete Deny
+                        url = self.build_api_url("{}s/{}/permissions/{}s/{}/{}/Deny".format(obj_type, obj_luid,
+                                                                                            luid_type, luid, cap))
+                        self.send_delete_request(url)
+                    else:
+                        self.log('{} set to none, no action'.format(cap))
 
-    # Permissions delete -- this is "Delete Workbook Permissions" for users or groups
-    def delete_workbook_capability_for_user_by_luid(self, wb_luid, user_luid, capability_name, capability_mode):
-        url = self.build_api_url(
-            "workbooks/{}/permissions/users/{}/{}/{}".format(wb_luid, user_luid, capability_name, capability_mode))
-        self.log("Deleting workbook capability via this URL: " + url)
-        self.send_delete_request(url)
-
-    def delete_workbook_capability_for_group_by_luid(self, wb_luid, group_luid, capability_name, capability_mode):
-        url = self.build_api_url(
-            "workbooks/{}/permissions/groups/{}/{}/{}".format(wb_luid, group_luid, capability_name, capability_mode))
-        self.log("Deleting workbook capability via this URL: " + url)
-        self.send_delete_request(url)
-
-    # Permissions delete -- this is "Delete datasource Permissions" for users or groups
-    def delete_datasource_capability_for_user_by_luid(self, ds_luid, user_luid, capability_name, capability_mode):
-        url = self.build_api_url(
-            "datasources/{}/permissions/users/{}/{}/{}".format(ds_luid, user_luid, capability_name, capability_mode))
-        self.log("Deleting datasource capability via this URL: " + url)
-        self.send_delete_request(url)
-
-    def delete_datasource_capability_for_group_by_luid(self, ds_luid, group_luid, capability_name, capability_mode):
-        url = self.build_api_url(
-            "datasources/{}/permissions/groups/{}/{}/{}".format(ds_luid, group_luid, capability_name, capability_mode))
-        self.log("Deleting datasource capability via this URL: " + url)
-        self.send_delete_request(url)
-
-    # Permissions delete -- this is "Delete Project Permissions" for users or groups
-    def delete_project_capability_for_user_by_luid(self, p_luid, user_luid, capability_name, capability_mode):
-        url = self.build_api_url(
-            "projects/{}/permissions/users/{}/{}/{}".format(p_luid, user_luid, capability_name, capability_mode))
-        self.log("Deleting datasource capability via this URL: " + url)
-        self.send_delete_request(url)
-
-    def delete_project_capability_for_group_by_luid(self, p_luid, group_luid, capability_name, capability_mode):
-        url = self.build_api_url(
-            "projects/{}/permissions/groups/{}/{}/{}".format(p_luid, group_luid, capability_name, capability_mode))
-        self.log("Deleting datasource capability via this URL: " + url)
-        self.send_delete_request(url)
+    # This completely clears out any permissions that an object has
+    def delete_all_permissions_by_luids(self, obj_type, obj_luid_s):
+        if obj_type not in ['project', 'workbook', 'datasource']:
+            raise InvalidOptionException("obj_type must be 'project', 'workbook', or 'datasource'")
+        self.log('Deleting all permissions for {} in following: '.format(obj_type))
+        obj_luids = self.to_list(obj_luid_s)
+        self.log(obj_luids)
+        for obj_luid in obj_luids:
+            if obj_type == 'project':
+                obj_permissions = self.query_project_permissions(obj_luid)
+            elif obj_type == 'workbook':
+                obj_permissions = self.query_workbook_permissions_by_luid(obj_luid)
+            elif obj_type == 'datasource':
+                obj_permissions = self.query_datasource_permissions(obj_luid)
+            try:
+                cap_list = self.convert_capabilities_xml_into_obj_list(obj_permissions)
+                for gcap_obj in cap_list:
+                    gcap_luid = gcap_obj.get_luid()
+                    gcap_obj_type = gcap_obj.get_obj_type()
+                    self.log('GranteeCapabilities for {} {}'.format(gcap_obj_type, gcap_luid))
+                    capabilities_dict = gcap_obj.get_capabilities_dict()
+                    self.delete_permissions_by_luids(obj_type, obj_luids, gcap_luid, capabilities_dict, gcap_obj_type)
+            except NoMatchFoundException as e:
+                self.log(e)
+                self.log('{} {} had no permissions assigned, skipping'.format(obj_type, obj_luid))
 
     def delete_tags_from_workbook_by_luid(self, wb_luid, tag_s):
         # Check wb_luid
@@ -1560,6 +1701,81 @@ class RestXmlRequest:
         elif self.__response_type in ['binary', 'png']:
             self.log('Binary response (binary or png) rather than XML')
             return True
+
+
+# Represents the GranteeCapabilities from any given
+class GranteeCapabilities:
+    def __init__(self, obj_type, luid):
+        if obj_type not in ['group', 'user']:
+            raise InvalidOptionException('GranteeCapabilites type must be "group" or "user"')
+        self.obj_type = obj_type
+        self.luid = luid
+        self.__capabilities = {
+            'AddComment': None,
+            'ChangeHierarchy': None,
+            'ChangePermissions': None,
+            'Connect': None,
+            'Delete': None,
+            'ExportData': None,
+            'ExportImage': None,
+            'ExportXml': None,
+            'Filter': None,
+            'ProjectLeader': None,
+            'Read': None,
+            'ShareView': None,
+            'ViewComments': None,
+            'ViewUnderlyingData': None,
+            'WebAuthoring': None,
+            'Write': None
+        }
+        self.__allowable_modes = ['Allow', 'Deny', None]
+        self.__server_to_rest_capability_map = {
+            'Add Comment': 'AddComment',
+            'Move': 'ChangeHierarchy',
+            'Set Permissions': 'ChangePermissions',
+            'Connect': 'Connect',
+            'Delete': 'Delete',
+            'View Summary Data': 'ExportData',
+            'Export Image': 'ExportImage',
+            'Download': 'ExportXml',
+            'Filter': 'Filter',
+            'Project Leader': 'ProjectLeader',
+            'View': 'Read',
+            'Share Customized': 'ShareView',
+            'View Comments': 'ViewComments',
+            'View Underlying Data': 'ViewUnderlyingData',
+            'Web Edit': 'WebAuthoring',
+            'Save': 'Write'
+            }
+
+    def set_capability(self, capability_name, mode):
+        if mode not in self.__allowable_modes:
+            raise InvalidOptionException('"{}" is not an allowable mode'.format(mode))
+        if capability_name not in self.__capabilities:
+            # If it's the Tableau UI naming, translate it over
+            if capability_name in self.__server_to_rest_capability_map:
+                capability_name = self.__server_to_rest_capability_map[capability_name]
+            else:
+                raise InvalidOptionException('"{}" is not a capability in REST API or Server'.format(capability_name))
+        self.__capabilities[capability_name] = mode
+
+    def set_capability_to_unspecified(self, capability_name):
+        if capability_name not in self.__capabilities:
+            # If it's the Tableau UI naming, translate it over
+            if capability_name in self.__server_to_rest_capability_map:
+                capability_name = self.__server_to_rest_capability_map[capability_name]
+            else:
+                raise InvalidOptionException('"{}" is not a capability in REST API or Server'.format(capability_name))
+        self.__capabilities[capability_name] = None
+
+    def get_capabilities_dict(self):
+        return self.__capabilities
+
+    def get_obj_type(self):
+        return self.obj_type
+
+    def get_luid(self):
+        return self.luid
 
 
 class Logger:
