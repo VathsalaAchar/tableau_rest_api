@@ -256,7 +256,7 @@ class TableauRestApi:
     #
 
     def signin(self):
-        if self._site_content_url in ['default', '']:
+        if self._site_content_url.lower() in ['default', '']:
             login_payload = '<tsRequest><credentials name="{}" password="{}" >'.format(self.__username, self.__password)
             login_payload += '<site /></credentials></tsRequest>'
         else:
@@ -685,8 +685,8 @@ class TableauRestApi:
             print "Error: File '" + filename + "' cannot be opened to save to"
             raise
 
-    # Do not include file extension
-    def download_datasource_by_luid(self, ds_luid, filename):
+    # Do not include file extension. Without filename, only returns the response
+    def download_datasource_by_luid(self, ds_luid, filename=None):
         # Check ds existence
         self.query_datasource_by_luid(ds_luid)
         # Open the file to be saved to
@@ -702,16 +702,18 @@ class TableauRestApi:
                 raise IOError('File extension could not be determined')
         except:
             raise
-        try:
-            save_file = open(filename + extension, 'wb')
-            save_file.write(ds)
-            save_file.close()
-        except IOError:
-            print "Error: File '" + filename + extension + "' cannot be opened to save to"
-            raise
+        if filename is not None:
+            try:
+                save_file = open(filename + extension, 'wb')
+                save_file.write(ds)
+                save_file.close()
+            except IOError:
+                print "Error: File '" + filename + extension + "' cannot be opened to save to"
+                raise
+        return ds
 
-    # Do not include file extension, added automatically
-    def download_workbook_by_luid(self, wb_luid, filename):
+    # Do not include file extension, added automatically. Without filename, only returns the response
+    def download_workbook_by_luid(self, wb_luid, filename=None):
         # Check ds existence
         self.query_workbook_by_luid(wb_luid)
         # Open the file to be saved to
@@ -727,13 +729,16 @@ class TableauRestApi:
                 raise IOError('File extension could not be determined')
         except:
             raise
-        try:
-            save_file = open(filename + extension, 'wb')
-            save_file.write(wb)
-            save_file.close()
-        except IOError:
-            print "Error: File '" + filename + extension + "' cannot be opened to save to"
-            raise
+        if filename is not None:
+            try:
+                save_file = open(filename + extension, 'wb')
+                save_file.write(wb)
+                save_file.close()
+            except IOError:
+                print "Error: File '" + filename + extension + "' cannot be opened to save to"
+                raise
+        return wb
+
     #
     # Create / Add Methods
     #
@@ -1150,7 +1155,7 @@ class TableauRestApi:
         for obj_luid in obj_luids:
             try:
                 self.log('Deleting all permissions for {}'.format(obj_luid))
-                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid)
+                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid, luids)
             except InvalidOptionException as e:
                 self.log(e.msg)
                 raise
@@ -1161,11 +1166,14 @@ class TableauRestApi:
         if obj_type.lower() not in self.__permissionable_objects:
             raise InvalidOptionException('obj_type must be "project", "datasource" or "workbook"')
         # Do this object by object, so that the delete and the assign are all together
+        gcap_luids = []
+        for gcap_obj in gcap_obj_list:
+            gcap_luids.append(gcap_obj.get_luid())
         self.log('Updating permissions for {} LUIDs'.format(str(len(obj_luids))))
         for obj_luid in obj_luids:
             try:
                 self.log('Deleting all permissions for {}'.format(obj_luid))
-                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid)
+                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid, gcap_luids)
             except InvalidOptionException as e:
                 self.log(e.msg)
                 raise
@@ -1333,11 +1341,15 @@ class TableauRestApi:
                     else:
                         self.log('{} set to none, no action'.format(cap))
 
-    # This completely clears out any permissions that an object has
-    def delete_all_permissions_by_luids(self, obj_type, obj_luid_s):
+    # This completely clears out any permissions that an object has. Use a luid_s_to_delete just some permissions
+    def delete_all_permissions_by_luids(self, obj_type, obj_luid_s, luid_s_to_delete=None):
         if obj_type not in ['project', 'workbook', 'datasource']:
             raise InvalidOptionException("obj_type must be 'project', 'workbook', or 'datasource'")
+
         self.log('Deleting all permissions for {} in following: '.format(obj_type))
+        if luid_s_to_delete is not None:
+            luids_to_delete = self.to_list(luid_s_to_delete)
+            self.log('Only deleting permissions for LUIDs {}'.format(luids_to_delete))
         obj_luids = self.to_list(obj_luid_s)
         self.log(obj_luids)
         for obj_luid in obj_luids:
@@ -1351,6 +1363,10 @@ class TableauRestApi:
                 cap_list = self.convert_capabilities_xml_into_obj_list(obj_permissions)
                 for gcap_obj in cap_list:
                     gcap_luid = gcap_obj.get_luid()
+                    # Don't delete if not in the list to delete
+                    if luid_s_to_delete is not None:
+                        if gcap_luid not in luids_to_delete:
+                            continue
                     gcap_obj_type = gcap_obj.get_obj_type()
                     self.log('GranteeCapabilities for {} {}'.format(gcap_obj_type, gcap_luid))
                     capabilities_dict = gcap_obj.get_capabilities_dict()
@@ -1777,6 +1793,23 @@ class GranteeCapabilities:
     def get_luid(self):
         return self.luid
 
+    def set_obj_type(self, obj_type):
+        if obj_type.lower() in ['group', 'user']:
+            self.obj_type = obj_type.lower()
+        else:
+            raise InvalidOptionException('obj_type can only be "group" or "user"')
+
+    def set_luid(self, new_luid):
+        self.luid = new_luid
+
+    def set_all_to_deny(self):
+        for cap in self.__capabilities:
+            self.__capabilities[cap] = 'Deny'
+
+    def set_all_to_allow(self):
+        for cap in self.__capabilities:
+            self.__capabilities[cap] = 'Allow'
+
 
 class Logger:
     def __init__(self, filename):
@@ -1791,6 +1824,76 @@ class Logger:
         cur_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         self.__log_handle.write('{}: {} \n'.format(cur_time, str(l)))
 
+
+# Meant to represent a TDS file, does not handle the file opening
+class TableauDatasource:
+    def __init__(self, datasource_string):
+        self.ds = StringIO(datasource_string)
+        self.xml = ""
+        # Find connection line and build TableauLiveConnection object
+        for line in self.ds:
+            if line.find('<connection ') != -1:
+                self.live_connection = TableauLiveConnection(line)
+                break
+            else:
+                self.xml += line
+
+    def get_datasource_xml(self):
+        i = 0
+        # First line is the connection, in whatever state is has been modified
+        for line in self.ds:
+            if i == 0:
+                self.xml += self.live_connection.get_xml_string()
+                i = 1
+            else:
+                self.xml += line
+        return self.xml
+
+    def save_datasource_xml(self, filename):
+        try:
+            lh = open(filename, 'wb')
+            lh.write(self.get_datasource_xml())
+            lh.close()
+        except IOError:
+            print "Error: File '" + filename + "' cannot be opened to write to"
+            raise
+
+# Represents the actual Connection tag of a given datasource
+class TableauLiveConnection:
+    def __init__(self, connection_line):
+        # Building from a <connection> tag
+        self.xml_obj = None
+        if connection_line.find("<connection "):
+            print 'Looking at: {}'.format(connection_line)
+            # Add ending tag for XML parsing
+            connection_line += "</connection>"
+            utf8_parser = etree.XMLParser(encoding='utf-8')
+            xml = etree.parse(StringIO(connection_line), parser=utf8_parser)
+            self.xml_obj = xml.getroot()
+            # xml = etree.fromstring(connection_line)
+        else:
+            raise InvalidOptionException("Must create a TableauLiveConnection from a Connection line")
+
+    def set_dbname(self, new_db_name):
+        if self.xml_obj.attrib["dbname"] is not None:
+            self.xml_obj.attrib["dbname"] = new_db_name
+
+    def set_server(self, new_server):
+        if self.xml_obj.attrib["server"] is not None:
+            self.xml_obj.attib["server"] = new_server
+
+    def set_username(self, new_username):
+        if self.xml_obj.attrib["username"] is not None:
+            self.xml_obj.attib["username"] = new_username
+
+    def set_port(self, new_port):
+        if self.xml_obj.attrib["port"] is not None:
+            self.xml_obj.attib["port"] = new_port
+
+    def get_xml_string(self):
+        xml_with_ending_tag = etree.tostring(self.xml_obj)
+        # Slice off the extra connection ending tag
+        return xml_with_ending_tag[0:xml_with_ending_tag.find('</connection>')]
 
 # Exceptions
 class NoMatchFoundException(Exception):
