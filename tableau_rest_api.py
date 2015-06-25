@@ -605,6 +605,14 @@ class TableauRestApi:
     def query_workbook_by_name(self, wb_name):
         return self.query_workbook_for_username_by_workbook_name(self.__username, wb_name)
 
+    def query_workbook_luid_by_name(self, username, wb_name):
+        workbooks = self.query_workbooks_by_username(username)
+        workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
+        if len(workbook) == 1:
+            wb_luid = workbook[0].get("id")
+            return wb_luid
+        return NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
+
     def query_workbook_luid_for_username_by_workbook_name(self, username, wb_name):
         workbooks = self.query_workbooks_by_username(username)
         workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
