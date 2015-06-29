@@ -1409,6 +1409,7 @@ class TableauRestApi:
         return datasource[0].get('id')
 
     # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
+    # If a TableauDatasource or TableauWorkbook is passed, will upload from its content
     def publish_content(self, content_type, content_filename, content_name, project_luid, overwrite=False,
                         connection_username=None, connection_password=None, save_credentials=True):
         # Single upload limit in MB
@@ -1421,15 +1422,42 @@ class TableauRestApi:
         # Check if project_luid exists
         self.query_project_by_luid(project_luid)
 
-        # Open the file to be uploaded
-        try:
-            content_file = open(content_filename, 'rb')
-            file_size = os.path.getsize(content_filename)
-            file_size_mb = float(file_size) / float(1000000)
-            self.log("File {} is size {} MBs".format(content_filename, file_size_mb))
-        except IOError:
-            print "Error: File '" + content_filename + "' cannot be opened to upload"
-            raise
+        file_extension = None
+        final_filename = None
+        # If dealing with either of the objects that represent Tableau content
+        if isinstance(content_filename, TableauDatasource):
+            file_extension = 'tds'
+            # Set file size low so it uses single upload instead of chunked
+            file_size_mb = 1
+            content_file = StringIO(content_filename.get_datasource_xml())
+            final_filename = content_name.replace(" ", "") + "." + file_extension
+        elif isinstance(content_filename, TableauWorkbook):
+            file_extension = 'twb'
+            # Set file size low so it uses single upload instead of chunked
+            file_size_mb = 1
+            content_file = StringIO(content_filename.get_workbook_xml())
+            final_filename = content_name.replace(" ", "") + "." + file_extension
+        # When uploading directly from disk
+        else:
+            for ending in ['.twb', '.twbx', '.tde', '.tdsx', '.tds']:
+                if content_filename.endswith(ending):
+                    file_extension = ending[1:]
+
+                    # Open the file to be uploaded
+                    try:
+                        content_file = open(content_filename, 'rb')
+                        file_size = os.path.getsize(content_filename)
+                        file_size_mb = float(file_size) / float(1000000)
+                        self.log("File {} is size {} MBs".format(content_filename, file_size_mb))
+                        final_filename = content_filename
+                    except IOError:
+                        print "Error: File '" + content_filename + "' cannot be opened to upload"
+                        raise
+
+            if file_extension is None:
+                raise InvalidOptionException(
+                    "File {} does not have an acceptable extension. Should be .twb,.twbx,.tde,.tdsx,.tds".format(
+                        content_filename))
 
         # Request type is mixed and require a boundary
         boundary_string = self.generate_boundary_string()
@@ -1446,37 +1474,40 @@ class TableauRestApi:
         publish_request += "</{}></tsRequest>\r\n".format(content_type)
         publish_request += "--{}".format(boundary_string)
 
-        if content_filename.endswith('.twb'):
-            file_extension = 'twb'
-        elif content_filename.endswith('.twbx'):
-            file_extension = 'twbx'
-        elif content_filename.endswith('.tde'):
-            file_extension = 'tde'
-        elif content_filename.endswith('.tdsx'):
-            file_extension = 'tdsx'
-        elif content_filename.endswith('.tds'):
-            file_extension = 'tds'
-        else:
-            raise InvalidOptionException(
-                "File {} does not have an acceptable extension. Should be .twb,.twbx,.tde,.tdsx,.tds".format(
-                    content_filename))
-
         # Upload as single if less than file_size_limit MB
         if file_size_mb <= single_upload_limit:
             # If part of a single upload, this if the next portion
             self.log("Less than {} MB, uploading as a single call".format(str(single_upload_limit)))
             publish_request += '\r\n'
             publish_request += 'Content-Disposition: name="tableau_{}"; filename="{}"\r\n'.format(
-                content_type, content_filename)
+                content_type, final_filename)
             publish_request += 'Content-Type: application/octet-stream\r\n\r\n'
 
             # Content needs to be read unencoded from the file
             content = content_file.read()
+
+            # If twb, create a TableauWorkbook object and check for any published data sources
+            if file_extension == 'twb':
+                if isinstance(content_filename, TableauWorkbook):
+                    wb_obj = content_filename
+                else:
+                    wb_obj = TableauWorkbook(content)
+                for ds in wb_obj.get_datasources().values():
+                    if ds.connection.is_published_datasource():
+                        pub_ds_name = ds.get_datasource_name()
+                        self.log("Workbook contains published data source named {}".format(pub_ds_name))
+                        try:
+                            self.query_datasource_by_name(pub_ds_name)
+                        except NoMatchFoundException as e:
+                            e_txt = "Required published data source {} does not exist on this site".format(pub_ds_name)
+                            raise NoMatchFoundException(e_txt)
             # Add to string as regular binary, no encoding
             publish_request += content
 
             publish_request += "\r\n--{}--".format(boundary_string)
             url = self.build_api_url("{}s").format(content_type) + "?overwrite={}".format(str(overwrite).lower())
+            content_file.close()
+            self.log(publish_request)
             return self.send_publish_request(url, publish_request, boundary_string)
         # Break up into chunks for upload
         else:
@@ -1485,7 +1516,7 @@ class TableauRestApi:
 
             for piece in self.__read_file_in_chunks(content_file):
                 self.log("Appending chunk to upload session {}".format(upload_session_id))
-                self.append_to_file_upload(upload_session_id, piece, content_filename)
+                self.append_to_file_upload(upload_session_id, piece, final_filename)
 
             url = self.build_api_url("{}s").format(content_type) + "?uploadSessionId={}".format(
                 upload_session_id) + "&{}Type={}".format(content_type, file_extension) + "&overwrite={}".format(
@@ -1827,27 +1858,61 @@ class Logger:
 
 # Meant to represent a TDS file, does not handle the file opening
 class TableauDatasource:
-    def __init__(self, datasource_string):
+    def __init__(self, datasource_string, logger_obj=None):
+        self.__logger = logger_obj
         self.ds = StringIO(datasource_string)
-        self.xml = ""
+        self.start_xml = ""
+        self.end_xml = ""
+        self.ds_name = None
+        self.connection = None
+
+        if self.__logger is not None:
+            self.enable_logging(self.__logger)
+
         # Find connection line and build TableauLiveConnection object
+        start_flag = True
         for line in self.ds:
-            if line.find('<connection ') != -1:
-                self.live_connection = TableauLiveConnection(line)
-                break
+            # Grab the caption if coming from
+            if line.find('<datasource ') != -1:
+                # Complete the tag so XML can be parsed
+                ds_tag = line + '</datasource>'
+                utf8_parser = etree.XMLParser(encoding='utf-8')
+                xml = etree.parse(StringIO(ds_tag), parser=utf8_parser)
+                xml_obj = xml.getroot()
+                if xml_obj.get("caption"):
+                    self.ds_name = xml_obj.attrib["caption"]
+                if start_flag is True:
+                    self.start_xml += line
+                elif start_flag is False:
+                    self.end_xml += line
+            elif line.find('<connection ') != -1:
+                self.connection = TableauConnection(line)
+                self.log("This is the connection line:")
+                self.log(line)
+                start_flag = False
+                continue
             else:
-                self.xml += line
+                if start_flag is True:
+                    self.start_xml += line
+                elif start_flag is False:
+                    self.end_xml += line
+
+    def enable_logging(self, logger_obj):
+        if isinstance(logger_obj, Logger):
+            self.__logger = logger_obj
+
+    def log(self, l):
+        if self.__logger is not None:
+            self.__logger.log(l)
+
+    def get_datasource_name(self):
+        return self.ds_name
 
     def get_datasource_xml(self):
-        i = 0
-        # First line is the connection, in whatever state is has been modified
-        for line in self.ds:
-            if i == 0:
-                self.xml += self.live_connection.get_xml_string()
-                i = 1
-            else:
-                self.xml += line
-        return self.xml
+        xml = self.start_xml
+        xml += self.connection.get_xml_string()
+        xml += self.end_xml
+        return xml
 
     def save_datasource_xml(self, filename):
         try:
@@ -1858,11 +1923,81 @@ class TableauDatasource:
             print "Error: File '" + filename + "' cannot be opened to write to"
             raise
 
+
+class TableauWorkbook:
+    def __init__(self, wb_string, logger_obj=None):
+        self.__logger = logger_obj
+        self.wb_string = wb_string
+        self.wb = StringIO(self.wb_string)
+        self.start_xml = ""
+        self.end_xml = ""
+        self.datasources = {}
+        start_flag = True
+        ds_flag = False
+        current_ds = ""
+
+        if self.__logger is not None:
+            self.enable_logging(self.__logger)
+
+        for line in self.wb:
+            # Start parsing the datasources
+            if start_flag is True and ds_flag is False:
+                self.start_xml += line
+            if start_flag is False and ds_flag is False:
+                self.end_xml += line
+            if ds_flag is True:
+                current_ds += line
+                # Break and load the datasource
+                if line.find("</datasource>") != -1:
+                    self.log("Building TableauDatasource object")
+                    ds_obj = TableauDatasource(current_ds, logger_obj=self.__logger)
+                    self.datasources[ds_obj.get_datasource_name()] = ds_obj
+                    current_ds = ""
+            if line.find("<datasources") != -1 and start_flag is True:
+                start_flag = False
+                ds_flag = True
+
+            if line.find("</datasources>") != -1 and ds_flag is True:
+                self.end_xml += line
+                ds_flag = False
+
+    def enable_logging(self, logger_obj):
+        if isinstance(logger_obj, Logger):
+            self.__logger = logger_obj
+
+    def log(self, l):
+        if self.__logger is not None:
+            self.__logger.log(l)
+
+    def get_datasources(self):
+        return self.datasources
+
+    def get_workbook_xml(self):
+        xml = self.start_xml
+        for ds in self.datasources.values():
+            xml += ds.get_datasource_xml()
+        xml += self.end_xml
+        return xml
+
+    def save_workbook_xml(self, filename):
+        try:
+            lh = open(filename, 'wb')
+            lh.write(self.get_workbook_xml())
+            lh.close()
+        except IOError:
+            print "Error: File '" + filename + "' cannot be opened to write to"
+            raise
+
 # Represents the actual Connection tag of a given datasource
-class TableauLiveConnection:
-    def __init__(self, connection_line):
+class TableauConnection:
+    def __init__(self, connection_line, logger_obj=None):
+        self.__logger = logger_obj
         # Building from a <connection> tag
         self.xml_obj = None
+
+        if self.__logger is not None:
+            self.enable_logging(self.__logger)
+
         if connection_line.find("<connection "):
             print 'Looking at: {}'.format(connection_line)
             # Add ending tag for XML parsing
@@ -1872,15 +2007,29 @@ class TableauLiveConnection:
             self.xml_obj = xml.getroot()
             # xml = etree.fromstring(connection_line)
         else:
-            raise InvalidOptionException("Must create a TableauLiveConnection from a Connection line")
+            raise InvalidOptionException("Must create a TableauConnection from a Connection line")
+
+    def enable_logging(self, logger_obj):
+        if isinstance(logger_obj, Logger):
+            self.__logger = logger_obj
+
+    def log(self, l):
+        if self.__logger is not None:
+            self.__logger.log(l)
 
     def set_dbname(self, new_db_name):
         if self.xml_obj.attrib["dbname"] is not None:
             self.xml_obj.attrib["dbname"] = new_db_name
 
+    def get_dbname(self):
+        return self.xml_obj.attrib["dbname"]
+
     def set_server(self, new_server):
         if self.xml_obj.attrib["server"] is not None:
             self.xml_obj.attib["server"] = new_server
+
+    def get_server(self):
+        return self.xml_obj.attrib["server"]
 
     def set_username(self, new_username):
         if self.xml_obj.attrib["username"] is not None:
@@ -1890,10 +2039,19 @@ class TableauLiveConnection:
         if self.xml_obj.attrib["port"] is not None:
             self.xml_obj.attib["port"] = new_port
 
+    def get_port(self):
+        return self.xml_obj.attrib["port"]
+
     def get_xml_string(self):
         xml_with_ending_tag = etree.tostring(self.xml_obj)
         # Slice off the extra connection ending tag
         return xml_with_ending_tag[0:xml_with_ending_tag.find('</connection>')]
+
+    def is_published_datasource(self):
+        if self.xml_obj.attrib["class"] == 'sqlproxy':
+            return True
+        else:
+            return False
 
 # Exceptions
 class NoMatchFoundException(Exception):
