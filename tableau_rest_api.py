@@ -813,15 +813,29 @@ class TableauRestApi:
                 raise IOError('File extension could not be determined')
         except:
             raise
-        if filename is not None:
-            try:
-                save_file = open(filename + extension, 'wb')
-                save_file.write(ds)
-                save_file.close()
-            except IOError:
-                print "Error: File '" + filename + extension + "' cannot be opened to save to"
-                raise
-        return ds
+        try:
+            if filename is None:
+                save_filename = 'temp_ds' + extension
+            else:
+                save_filename = filename + extension
+            save_file = open(save_filename, 'wb')
+            save_file.write(ds)
+            save_file.close()
+            if extension == '.tdsx':
+                self.log('Detected TDSX, creating TableauPackagedFile object')
+                saved_file = open(save_filename, 'rb')
+                return_obj = TableauPackagedFile(saved_file, self.__logger)
+                saved_file.close()
+                if filename is None:
+                    os.remove(save_filename)
+        except IOError:
+            print "Error: File '" + filename + extension + "' cannot be opened to save to"
+            raise
+        if extension == '.tds':
+            self.log('Detected TDS, creating TableauDatasource object')
+            return_obj = TableauDatasource(ds, self.__logger)
+
+        return return_obj
 
     # Do not include file extension, added automatically. Without filename, only returns the response
     def download_workbook_by_luid(self, wb_luid, filename=None):
@@ -840,15 +854,30 @@ class TableauRestApi:
                 raise IOError('File extension could not be determined')
         except:
             raise
-        if filename is not None:
-            try:
-                save_file = open(filename + extension, 'wb')
-                save_file.write(wb)
-                save_file.close()
-            except IOError:
-                print "Error: File '" + filename + extension + "' cannot be opened to save to"
-                raise
-        return wb
+        try:
+            if filename is None:
+                save_filename = 'temp_wb' + extension
+            else:
+                save_filename = filename + extension
+
+            save_file = open(save_filename, 'wb')
+            save_file.write(wb)
+            save_file.close()
+            if extension == '.twbx':
+                self.log('Dtected TWBX, creating TableauPackagedFile object')
+                saved_file = open(save_filename, 'rb')
+                return_obj = TableauPackagedFile(saved_file, self.__logger)
+                #saved_file.close()
+                if filename is None:
+                    os.remove(save_filename)
+
+        except IOError:
+            print "Error: File '" + filename + extension + "' cannot be opened to save to"
+            raise
+        if extension == '.twb':
+            self.log('Detected TWB, creating TableauWorkbook object')
+            return_obj = TableauWorkbook(wb, self.__logger)
+        return return_obj
 
     #
     # Create / Add Methods
@@ -1563,6 +1592,12 @@ class TableauRestApi:
 
         file_extension = None
         final_filename = None
+        cleanup_temp_file = False
+        # If a packaged file object, save the file locally as a temp for upload, then treated as regular file
+        if isinstance(content_filename, TableauPackagedFile):
+            content_filename = content_filename.save_new_packaged_file('temp_packaged_file')
+            cleanup_temp_file = True
+
         # If dealing with either of the objects that represent Tableau content
         if isinstance(content_filename, TableauDatasource):
             file_extension = 'tds'
@@ -1576,6 +1611,7 @@ class TableauRestApi:
             file_size_mb = 1
             content_file = StringIO(content_filename.get_workbook_xml())
             final_filename = content_name.replace(" ", "") + "." + file_extension
+
         # When uploading directly from disk
         else:
             for ending in ['.twb', '.twbx', '.tde', '.tdsx', '.tds']:
@@ -1646,7 +1682,8 @@ class TableauRestApi:
             publish_request += "\r\n--{}--".format(boundary_string)
             url = self.build_api_url("{}s").format(content_type) + "?overwrite={}".format(str(overwrite).lower())
             content_file.close()
-            self.log(publish_request)
+            if cleanup_temp_file is True:
+                os.remove(final_filename)
             return self.send_publish_request(url, publish_request, boundary_string)
         # Break up into chunks for upload
         else:
@@ -1663,6 +1700,8 @@ class TableauRestApi:
             publish_request += "--"  # Need to finish off the last boundary
             self.log("Finishing the upload with a publish request")
             content_file.close()
+            if cleanup_temp_file is True:
+                os.remove(final_filename)
             return self.send_publish_request(url, publish_request, boundary_string)
 
     def initiate_file_upload(self):
@@ -2012,13 +2051,12 @@ class TableauPackagedFile:
                     self.xml_name = name
                     tds_file_obj = self.zf.open(self.xml_name)
                     self.tableau_object = TableauDatasource(tds_file_obj.read(), self.__logger)
-                    tds_file_obj.close()
                 elif name.endswith('.twb'):
                     self.type = 'twbx'
                     self.xml_name = name
                     twb_file_obj = self.zf.open(self.xml_name)
                     self.tableau_object = TableauWorkbook(twb_file_obj.read(), self.__logger)
-                    twb_file_obj.close()
+
             else:
                 self.other_files.append(name)
 
@@ -2040,14 +2078,14 @@ class TableauPackagedFile:
         if self.type == 'twbx':
             save_filename = new_filename[0] + '.twbx'
             new_zf = zipfile.ZipFile(save_filename, 'w')
-            self.log('Creating temporary XML file {}'.format(save_filename))
+            self.log('Creating temporary XML file {}'.format(self.xml_name))
             self.tableau_object.save_workbook_xml(self.xml_name)
             new_zf.write(self.xml_name)
             os.remove(self.xml_name)
         elif self.type == 'tdsx':
             save_filename = new_filename[0] + '.tdsx'
             new_zf = zipfile.ZipFile(save_filename, 'w')
-            self.log('Creating temporary XML file {}'.format(save_filename))
+            self.log('Creating temporary XML file {}'.format(self.xml_name))
             self.tableau_object.save_datasource_xml(self.xml_name)
             new_zf.write(self.xml_name)
             os.remove(self.xml_name)
@@ -2055,8 +2093,8 @@ class TableauPackagedFile:
 
         temp_directories_to_remove = {}
         for filename in self.other_files:
-            self.zf.extract(filename)
             self.log('Extracting file {} temporarily'.format(filename))
+            self.zf.extract(filename)
             new_zf.write(filename)
             os.remove(filename)
             self.log('Removed file {}'.format(filename))
@@ -2067,6 +2105,10 @@ class TableauPackagedFile:
         for directory in temp_directories_to_remove:
             shutil.rmtree(directory)
         new_zf.close()
+        self.zf.close()
+
+        # Return the filename so it can be opened from disk by other objects
+        return save_filename
 
 
 # Meant to represent a TDS file, does not handle the file opening
