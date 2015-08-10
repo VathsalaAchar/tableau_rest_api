@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='tableau_rest_api',
-    version='1.2.0',
+    version='1.3.0',
     install_requires=['lxml'],
     packages=['tableau_rest_api'],
     url='https://github.com/bryantbhowell/tableau_rest_api',
