@@ -12,6 +12,9 @@ import time
 import random
 import os
 import re
+import copy
+import zipfile
+import shutil
 
 
 class TableauRestApi:
@@ -38,7 +41,7 @@ class TableauRestApi:
             'Filter', 'Read', 'ShareView', 'ViewComments', 'ViewUnderlyingData', 'WebAuthoring', 'Write')
         self.__site_roles = (
             'Interactor', 'Publisher', 'SiteAdministrator', 'Unlicensed', 'UnlicensedWithPublish', 'Viewer',
-            'ViewerWithPublish')
+            'ViewerWithPublish', 'ServerAdministrator')
         self.__permissionable_objects = ['datasource', 'project', 'workbook']
         self.__ns_map = {'t': 'http://tableausoftware.com/api'}
         self.__server_to_rest_capability_map = {'Add Comment': 'AddComment',
@@ -225,7 +228,7 @@ class TableauRestApi:
         xml += '</capabilities>'
         return xml
 
-    # Turns lxml that is returned when asking for permissions into a bunch of GranteeCapabilities objecfts
+    # Turns lxml that is returned when asking for permissions into a bunch of GranteeCapabilities objects
     def convert_capabilities_xml_into_obj_list(self, lxml_obj):
         obj_list = []
         xml = lxml_obj.xpath('//t:granteeCapabilities', namespaces=self.__ns_map)
@@ -251,7 +254,115 @@ class TableauRestApi:
             self.log('Gcap object list has ' + str(len(obj_list)) + ' items')
             return obj_list
 
-    #
+    # Runs through the gcap object list, and tries to do a conversion all principals to matching LUIDs on current site
+    # Use case is replicating settings from one site to another
+    # Orig_site must be TableauRestApi
+    def convert_gcap_obj_list_from_orig_site_to_current_site(self, gcap_obj_list, orig_site):
+        new_gcap_obj_list = []
+        orig_site_groups = orig_site.query_groups()
+        orig_site_users = orig_site.query_users()
+        orig_site_groups_dict = self.convert_xml_list_to_name_id_dict(orig_site_groups)
+        orig_site_users_dict = self.convert_xml_list_to_name_id_dict(orig_site_users)
+
+        new_site_groups = self.query_groups()
+        new_site_users = self.query_users()
+        new_site_groups_dict = self.convert_xml_list_to_name_id_dict(new_site_groups)
+        new_site_users_dict = self.convert_xml_list_to_name_id_dict(new_site_users)
+        for gcap_obj in gcap_obj_list:
+            orig_luid = gcap_obj.get_luid()
+            if gcap_obj.get_obj_type() == 'group':
+                # Find the name that matches the LUID
+                try:
+                    orig_name = (key for key, value in orig_site_groups_dict.items() if value == orig_luid).next()
+                except StopIteration:
+                    raise NoMatchFoundException("No matching name for luid {} found on the original site".format(
+                                                orig_luid))
+                new_luid = new_site_groups_dict.get(orig_name)
+
+            elif gcap_obj.get_obj_type() == 'user':
+                # Find the name that matches the LUID
+                try:
+                    orig_name = (key for key, value in orig_site_users_dict.items() if value == orig_luid).next()
+                except StopIteration:
+                    raise NoMatchFoundException("No matching name for luid {} found on the original site".format(
+                                                orig_luid))
+                new_luid = new_site_users_dict.get(orig_name)
+
+            new_gcap_obj = copy.copy(gcap_obj)
+            if new_luid is None:
+                raise NoMatchFoundException("No matching {} named {} found on the new site".format(
+                                            gcap_obj.get_obj_type(), orig_name))
+            new_gcap_obj.set_luid(new_luid)
+            new_gcap_obj_list.append(new_gcap_obj)
+        return new_gcap_obj_list
+
+    # Determine if capabilities are already set identically (or identically enough) to skip
+    @staticmethod
+    def are_capabilities_obj_lists_identical(new_obj_list, dest_obj_list):
+        # Grab the LUIDs of each, determine if they match in the first place
+
+        # Create a dict with the LUID as the keys for sorting and comparison
+        new_obj_dict = {}
+        for obj in new_obj_list:
+            new_obj_dict[obj.get_luid()] = obj
+
+        dest_obj_dict = {}
+        for obj in dest_obj_list:
+            dest_obj_dict[obj.get_luid()] = obj
+
+        # If lengths don't match, they must differ
+        if len(new_obj_dict) != len(dest_obj_dict):
+            return False
+        else:
+            # If LUIDs don't match, they must differ
+            new_obj_luids = new_obj_dict.keys()
+            dest_obj_luids = dest_obj_dict.keys()
+            new_obj_luids.sort()
+            dest_obj_luids.sort()
+            if cmp(new_obj_luids, dest_obj_luids) != 0:
+                return False
+            # Run through each to compare
+            else:
+                # At this point, we know they must match up
+                for luid in new_obj_luids:
+                    new_obj = new_obj_dict.get(luid)
+                    dest_obj = dest_obj_dict.get(luid)
+                    new_obj_cap_dict = new_obj.get_capabilities_dict()
+                    dest_obj_cap_dict = dest_obj.get_capabilities_dict()
+                    if cmp(new_obj_cap_dict, dest_obj_cap_dict):
+                        return True
+                    else:
+                        return False
+
+    # Looks at LUIDs in new_obj_list, if they exist in the dest_obj, compares their gcap objects, if match returns True
+    @staticmethod
+    def are_capabilities_objs_identical_for_matching_luids(new_obj_list, dest_obj_list):
+        # Create a dict with the LUID as the keys for sorting and comparison
+        new_obj_dict = {}
+        for obj in new_obj_list:
+            new_obj_dict[obj.get_luid()] = obj
+
+        dest_obj_dict = {}
+        for obj in dest_obj_list:
+            dest_obj_dict[obj.get_luid()] = obj
+
+        new_obj_luids = new_obj_dict.keys()
+        dest_obj_luids = dest_obj_dict.keys()
+
+        if set(dest_obj_luids).issuperset(new_obj_luids):
+            # At this point, we know the new_objs do exist on the current obj, so let's see if they are identical
+            for luid in new_obj_luids:
+                new_obj = new_obj_dict.get(luid)
+                dest_obj = dest_obj_dict.get(luid)
+                new_obj_cap_dict = new_obj.get_capabilities_dict()
+                dest_obj_cap_dict = dest_obj.get_capabilities_dict()
+                if cmp(new_obj_cap_dict, dest_obj_cap_dict):
+                    return True
+                else:
+                    return False
+        else:
+            return False
+#
     # Sign-in and Sign-out
     #
 
@@ -710,15 +821,29 @@ class TableauRestApi:
                 raise IOError('File extension could not be determined')
         except:
             raise
-        if filename is not None:
-            try:
-                save_file = open(filename + extension, 'wb')
-                save_file.write(ds)
-                save_file.close()
-            except IOError:
-                print "Error: File '" + filename + extension + "' cannot be opened to save to"
-                raise
-        return ds
+        try:
+            if filename is None:
+                save_filename = 'temp_ds' + extension
+            else:
+                save_filename = filename + extension
+            save_file = open(save_filename, 'wb')
+            save_file.write(ds)
+            save_file.close()
+            if extension == '.tdsx':
+                self.log('Detected TDSX, creating TableauPackagedFile object')
+                saved_file = open(save_filename, 'rb')
+                return_obj = TableauPackagedFile(saved_file, self.__logger)
+                saved_file.close()
+                if filename is None:
+                    os.remove(save_filename)
+        except IOError:
+            print "Error: File '" + filename + extension + "' cannot be opened to save to"
+            raise
+        if extension == '.tds':
+            self.log('Detected TDS, creating TableauDatasource object')
+            return_obj = TableauDatasource(ds, self.__logger)
+
+        return return_obj
 
     # Do not include file extension, added automatically. Without filename, only returns the response
     def download_workbook_by_luid(self, wb_luid, filename=None):
@@ -737,15 +862,30 @@ class TableauRestApi:
                 raise IOError('File extension could not be determined')
         except:
             raise
-        if filename is not None:
-            try:
-                save_file = open(filename + extension, 'wb')
-                save_file.write(wb)
-                save_file.close()
-            except IOError:
-                print "Error: File '" + filename + extension + "' cannot be opened to save to"
-                raise
-        return wb
+        try:
+            if filename is None:
+                save_filename = 'temp_wb' + extension
+            else:
+                save_filename = filename + extension
+
+            save_file = open(save_filename, 'wb')
+            save_file.write(wb)
+            save_file.close()
+            if extension == '.twbx':
+                self.log('Dtected TWBX, creating TableauPackagedFile object')
+                saved_file = open(save_filename, 'rb')
+                return_obj = TableauPackagedFile(saved_file, self.__logger)
+                #saved_file.close()
+                if filename is None:
+                    os.remove(save_filename)
+
+        except IOError:
+            print "Error: File '" + filename + extension + "' cannot be opened to save to"
+            raise
+        if extension == '.twb':
+            self.log('Detected TWB, creating TableauWorkbook object')
+            return_obj = TableauWorkbook(wb, self.__logger)
+        return return_obj
 
     #
     # Create / Add Methods
@@ -1179,13 +1319,26 @@ class TableauRestApi:
             gcap_luids.append(gcap_obj.get_luid())
         self.log('Updating permissions for {} LUIDs'.format(str(len(obj_luids))))
         for obj_luid in obj_luids:
-            try:
-                self.log('Deleting all permissions for {}'.format(obj_luid))
-                self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid, gcap_luids)
-            except InvalidOptionException as e:
-                self.log(e.msg)
-                raise
-            self.add_permissions_by_gcap_obj_list(obj_type.lower(), obj_luid, gcap_obj_list)
+            # Depending on object type, we have to do the method to get our permissions
+            if obj_type == 'project':
+                permissions_lxml = self.query_project_permissions(obj_luid)
+            elif obj_type == 'datasource':
+                permissions_lxml = self.query_datasource_permissions(obj_luid)
+            elif obj_type == 'workbook':
+                permissions_lxml = self.query_workbook_permissions_by_luid(obj_luid)
+            else:
+                raise InvalidOptionException('obj_type not set correctly')
+            dest_capabilities_list = self.convert_capabilities_xml_into_obj_list(permissions_lxml)
+            if self.are_capabilities_objs_identical_for_matching_luids(gcap_obj_list, dest_capabilities_list) is False:
+                try:
+                    self.log('Deleting all permissions for {}'.format(obj_luid))
+                    self.delete_all_permissions_by_luids(obj_type.lower(), obj_luid, gcap_luids)
+                except InvalidOptionException as e:
+                    self.log(e.msg)
+                    raise
+                self.add_permissions_by_gcap_obj_list(obj_type.lower(), obj_luid, gcap_obj_list)
+            else:
+                self.log('Skipping update because permissions on object {} already match'.format(obj_luid))
 
     # Special permissions methods
     # Take the permissions from one object (project most likely) and assign to other content
@@ -1196,6 +1349,7 @@ class TableauRestApi:
             raise InvalidOptionException('obj_type must be "project", "datasource" or "workbook"')
         if dest_type.lower() not in self.__permissionable_objects:
             raise InvalidOptionException('dest_type must be "project", "datasource" or "workbook"')
+        # Depending on object type, we have to do the method to get our permissions
         if obj_type == 'project':
             permissions_lxml = self.query_project_permissions(obj_luid)
         elif obj_type == 'datasource':
@@ -1203,13 +1357,27 @@ class TableauRestApi:
         elif obj_type == 'workbook':
             permissions_lxml = self.query_workbook_permissions_by_luid(obj_luid)
         else:
-            raise InvalidOptionException('obj_type or dest_type not set correctly')
+            raise InvalidOptionException('obj_type not set correctly')
+
         capabilities_list = self.convert_capabilities_xml_into_obj_list(permissions_lxml)
         for dest_obj_luid in dest_obj_luids:
-            # Delete all first clears the object to have them added
-            self.delete_all_permissions_by_luids(dest_type, dest_obj_luid)
-            # Add each set of capabilities to the cleared object
-            self.add_permissions_by_gcap_obj_list(dest_type, dest_obj_luid, capabilities_list)
+            # Grab the destination permissions too, so we can compare and skip if already identical
+            if dest_type == 'project':
+                dest_permissions_lxml = self.query_project_permissions(dest_obj_luid)
+            elif dest_type == 'datasource':
+                dest_permissions_lxml = self.query_datasource_permissions(dest_obj_luid)
+            elif dest_type == 'workbook':
+                dest_permissions_lxml = self.query_workbook_permissions_by_luid(dest_obj_luid)
+            else:
+                raise InvalidOptionException('obj_type not set correctly')
+            dest_capabilities_list = self.convert_capabilities_xml_into_obj_list(dest_permissions_lxml)
+            if self.are_capabilities_obj_lists_identical(capabilities_list, dest_capabilities_list) is False:
+                # Delete all first clears the object to have them added
+                self.delete_all_permissions_by_luids(dest_type, dest_obj_luid)
+                # Add each set of capabilities to the cleared object
+                self.add_permissions_by_gcap_obj_list(dest_type, dest_obj_luid, capabilities_list)
+            else:
+                self.log("Permissions matched, no need to update. Moving to next")
 
     # Pulls the permissions from the project, then applies them to all the content in the project
     def sync_project_permissions_to_contents(self, project_name_or_luid):
@@ -1432,6 +1600,12 @@ class TableauRestApi:
 
         file_extension = None
         final_filename = None
+        cleanup_temp_file = False
+        # If a packaged file object, save the file locally as a temp for upload, then treated as regular file
+        if isinstance(content_filename, TableauPackagedFile):
+            content_filename = content_filename.save_new_packaged_file('temp_packaged_file')
+            cleanup_temp_file = True
+
         # If dealing with either of the objects that represent Tableau content
         if isinstance(content_filename, TableauDatasource):
             file_extension = 'tds'
@@ -1445,6 +1619,7 @@ class TableauRestApi:
             file_size_mb = 1
             content_file = StringIO(content_filename.get_workbook_xml())
             final_filename = content_name.replace(" ", "") + "." + file_extension
+
         # When uploading directly from disk
         else:
             for ending in ['.twb', '.twbx', '.tde', '.tdsx', '.tds']:
@@ -1515,7 +1690,8 @@ class TableauRestApi:
             publish_request += "\r\n--{}--".format(boundary_string)
             url = self.build_api_url("{}s").format(content_type) + "?overwrite={}".format(str(overwrite).lower())
             content_file.close()
-            self.log(publish_request)
+            if cleanup_temp_file is True:
+                os.remove(final_filename)
             return self.send_publish_request(url, publish_request, boundary_string)
         # Break up into chunks for upload
         else:
@@ -1532,6 +1708,8 @@ class TableauRestApi:
             publish_request += "--"  # Need to finish off the last boundary
             self.log("Finishing the upload with a publish request")
             content_file.close()
+            if cleanup_temp_file is True:
+                os.remove(final_filename)
             return self.send_publish_request(url, publish_request, boundary_string)
 
     def initiate_file_upload(self):
@@ -1864,6 +2042,83 @@ class Logger:
         self.__log_handle.write('{}: {} \n'.format(cur_time, str(l)))
 
 
+# Represents a TWBX or TDSX and allows manipulation of the XML objects inside via their related object
+class TableauPackagedFile:
+    def __init__(self, zip_file_obj, logger_obj=None):
+        self.__logger = logger_obj
+        self.zf = zipfile.ZipFile(zip_file_obj)
+        self.xml_name = None
+        self.type = None  # either 'twbx' or 'tdsx'
+        self.tableau_object = None
+        self.other_files = []
+        for name in self.zf.namelist():
+            # Ignore anything in the subdirectories
+            if name.find('/') == -1:
+                if name.endswith('.tds'):
+                    self.type = 'tdsx'
+                    self.xml_name = name
+                    tds_file_obj = self.zf.open(self.xml_name)
+                    self.tableau_object = TableauDatasource(tds_file_obj.read(), self.__logger)
+                elif name.endswith('.twb'):
+                    self.type = 'twbx'
+                    self.xml_name = name
+                    twb_file_obj = self.zf.open(self.xml_name)
+                    self.tableau_object = TableauWorkbook(twb_file_obj.read(), self.__logger)
+
+            else:
+                self.other_files.append(name)
+
+    def log(self, l):
+        if self.__logger is not None:
+            self.__logger.log(l)
+
+    def get_type(self):
+        return self.type
+
+    def get_tableau_object(self):
+        return self.tableau_object
+
+    # Appropriate extension added if needed
+    def save_new_packaged_file(self, new_filename_no_extension):
+        new_filename = new_filename_no_extension.split('.') # simple algorithm to kill extension
+
+        # Save the object down
+        if self.type == 'twbx':
+            save_filename = new_filename[0] + '.twbx'
+            new_zf = zipfile.ZipFile(save_filename, 'w')
+            self.log('Creating temporary XML file {}'.format(self.xml_name))
+            self.tableau_object.save_workbook_xml(self.xml_name)
+            new_zf.write(self.xml_name)
+            os.remove(self.xml_name)
+        elif self.type == 'tdsx':
+            save_filename = new_filename[0] + '.tdsx'
+            new_zf = zipfile.ZipFile(save_filename, 'w')
+            self.log('Creating temporary XML file {}'.format(self.xml_name))
+            self.tableau_object.save_datasource_xml(self.xml_name)
+            new_zf.write(self.xml_name)
+            os.remove(self.xml_name)
+            self.log('Removed file {}'.format(save_filename))
+
+        temp_directories_to_remove = {}
+        for filename in self.other_files:
+            self.log('Extracting file {} temporarily'.format(filename))
+            self.zf.extract(filename)
+            new_zf.write(filename)
+            os.remove(filename)
+            self.log('Removed file {}'.format(filename))
+            lowest_level = filename.split('/')
+            temp_directories_to_remove[lowest_level[0]] = True
+
+        # Cleanup all the temporary directories
+        for directory in temp_directories_to_remove:
+            shutil.rmtree(directory)
+        new_zf.close()
+        self.zf.close()
+
+        # Return the filename so it can be opened from disk by other objects
+        return save_filename
+
+
 # Meant to represent a TDS file, does not handle the file opening
 class TableauDatasource:
     def __init__(self, datasource_string, logger_obj=None):
@@ -1877,7 +2132,7 @@ class TableauDatasource:
         if self.__logger is not None:
             self.enable_logging(self.__logger)
 
-        # Find connection line and build TableauLiveConnection object
+        # Find connection line and build TableauConnection object
         start_flag = True
         for line in self.ds:
             # Grab the caption if coming from
@@ -1889,11 +2144,13 @@ class TableauDatasource:
                 xml_obj = xml.getroot()
                 if xml_obj.get("caption"):
                     self.ds_name = xml_obj.attrib["caption"]
+                elif xml_obj.get("name"):
+                    self.ds_name = xml_obj.attrib['name']
                 if start_flag is True:
                     self.start_xml += line
                 elif start_flag is False:
                     self.end_xml += line
-            elif line.find('<connection ') != -1:
+            elif line.find('<connection ') != -1 and start_flag is True:
                 self.connection = TableauConnection(line)
                 self.log("This is the connection line:")
                 self.log(line)
@@ -1918,7 +2175,9 @@ class TableauDatasource:
 
     def get_datasource_xml(self):
         xml = self.start_xml
-        xml += self.connection.get_xml_string()
+        # Parameters datasource section does not have a connection tag
+        if self.connection is not None:
+            xml += self.connection.get_xml_string()
         xml += self.end_xml
         return xml
 
@@ -1982,8 +2241,9 @@ class TableauWorkbook:
 
     def get_workbook_xml(self):
         xml = self.start_xml
-        for ds in self.datasources.values():
-            xml += ds.get_datasource_xml()
+        for ds in self.datasources:
+            self.log('Adding in XML from datasource {}'.format(ds))
+            xml += self.datasources.get(ds).get_datasource_xml()
         xml += self.end_xml
         return xml
 
@@ -2007,7 +2267,7 @@ class TableauConnection:
             self.enable_logging(self.__logger)
 
         if connection_line.find("<connection "):
-            print 'Looking at: {}'.format(connection_line)
+            self.log('Looking at: {}'.format(connection_line))
             # Add ending tag for XML parsing
             connection_line += "</connection>"
             utf8_parser = etree.XMLParser(encoding='utf-8')
@@ -2050,6 +2310,9 @@ class TableauConnection:
     def get_port(self):
         return self.xml_obj.attrib["port"]
 
+    def get_connection_type(self):
+        return self.xml_obj.attrib['class']
+
     def get_xml_string(self):
         xml_with_ending_tag = etree.tostring(self.xml_obj)
         # Slice off the extra connection ending tag
@@ -2060,6 +2323,13 @@ class TableauConnection:
             return True
         else:
             return False
+
+    def is_windows_auth(self):
+        if self.xml_obj.attrib["authentication"] is not None:
+            if self.xml_obj.attrib["authentication"] == 'sspi':
+                return True
+            else:
+                return False
 
 # Exceptions
 class NoMatchFoundException(Exception):
