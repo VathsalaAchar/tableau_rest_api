@@ -693,11 +693,13 @@ class TableauRestApi:
     def query_workbook_for_username_by_workbook_name(self, username, wb_name):
         workbooks = self.query_workbooks_by_username(username)
         workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
-        if len(workbook) == 1:
+        if len(workbook) == 0:
+            raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
+        elif len(workbook) == 1:
             wb_luid = workbook[0].get("id")
             return self.query_workbook_by_luid(wb_luid)
         else:
-            raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
+            raise MultipleMatchesFound(len(workbook))
 
     def query_workbooks_in_project_for_username(self, project_name_or_luid, username):
         if self.is_luid(project_name_or_luid):
@@ -746,8 +748,14 @@ class TableauRestApi:
         return self.query_resource("workbooks/{}/permissions".format(wb_luid))
 
     def query_workbook_permissions_for_username_by_workbook_name(self, username, wb_name):
-        wb_luid = self.query_workbook_for_username_by_workbook_name(username, wb_name)
+        wb_luid = self.query_workbook_luid_for_username_by_workbook_name(username, wb_name)
         return self.query_workbook_permissions_by_luid(wb_luid)
+
+    def query_workbook_permissions(self, name_or_luid):
+        if self.is_luid(name_or_luid):
+            return self.query_workbook_permissions_by_luid(name_or_luid)
+        else:
+            return self.query_workbook_permissions_for_username_by_workbook_name(self.__username, name_or_luid)
 
     def query_workbook_connections_by_luid(self, wb_luid):
         # Check the workbook exists
@@ -1563,9 +1571,9 @@ class TableauRestApi:
     '''
 
     def publish_workbook(self, workbook_filename, workbook_name, project_luid, overwrite=False,
-                         connection_username=None, connection_password=None, save_credentials=True):
+                         connection_username=None, connection_password=None, save_credentials=True, show_tabs=True):
         xml = self.publish_content('workbook', workbook_filename, workbook_name, project_luid, overwrite,
-                                   connection_username, connection_password, save_credentials)
+                                   connection_username, connection_password, save_credentials, show_tabs=show_tabs)
         workbook = xml.xpath('//t:workbook', namespaces=self.__ns_map)
         return workbook[0].get('id')
 
@@ -1579,7 +1587,7 @@ class TableauRestApi:
     # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
     # If a TableauDatasource or TableauWorkbook is passed, will upload from its content
     def publish_content(self, content_type, content_filename, content_name, project_luid, overwrite=False,
-                        connection_username=None, connection_password=None, save_credentials=True):
+                        connection_username=None, connection_password=None, save_credentials=True, show_tabs=False):
         # Single upload limit in MB
         single_upload_limit = 20
 
@@ -1641,7 +1649,10 @@ class TableauRestApi:
         publish_request = "--{}\r\n".format(boundary_string)
         publish_request += 'Content-Disposition: name="request_payload"\r\n'
         publish_request += 'Content-Type: text/xml\r\n\r\n'
-        publish_request += '<tsRequest>\n<{} name="{}">\r\n'.format(content_type, content_name)
+        publish_request += '<tsRequest>\n<{} name="{}" '.format(content_type, content_name)
+        if show_tabs is not False:
+            publish_request += 'showTabs="{}"'.format(str(show_tabs).lower())
+        publish_request += '>\r\n'
         if connection_username is not None and connection_password is not None:
             publish_request += '<connectionCredentials name="{}" password="{}" embed="{}" />\r\n'.format(
                 connection_username, connection_password, str(save_credentials).lower())
@@ -2286,18 +2297,18 @@ class TableauConnection:
 
     def set_server(self, new_server):
         if self.xml_obj.attrib["server"] is not None:
-            self.xml_obj.attib["server"] = new_server
+            self.xml_obj.attrib["server"] = new_server
 
     def get_server(self):
         return self.xml_obj.attrib["server"]
 
     def set_username(self, new_username):
         if self.xml_obj.attrib["username"] is not None:
-            self.xml_obj.attib["username"] = new_username
+            self.xml_obj.attrib["username"] = new_username
 
     def set_port(self, new_port):
         if self.xml_obj.attrib["port"] is not None:
-            self.xml_obj.attib["port"] = new_port
+            self.xml_obj.attrib["port"] = new_port
 
     def get_port(self):
         return self.xml_obj.attrib["port"]
@@ -2351,3 +2362,9 @@ class RecoverableHTTPException(Exception):
     def __init__(self, http_code, tableau_error_code):
         self.http_code = http_code
         self.tableau_error_code = tableau_error_code
+
+
+class MultipleMatchesFound(Exception):
+    def __init__(self, count):
+        self.msg = 'Found {} matches for the request, something has the same name'.format(str(count))
+
