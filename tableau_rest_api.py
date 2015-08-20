@@ -1587,7 +1587,8 @@ class TableauRestApi:
     # Main method for publishing a workbook. Should intelligently decide to chunk up if necessary
     # If a TableauDatasource or TableauWorkbook is passed, will upload from its content
     def publish_content(self, content_type, content_filename, content_name, project_luid, overwrite=False,
-                        connection_username=None, connection_password=None, save_credentials=True, show_tabs=False):
+                        connection_username=None, connection_password=None, save_credentials=True, show_tabs=False,
+                        check_published_ds=False):
         # Single upload limit in MB
         single_upload_limit = 20
 
@@ -1673,7 +1674,7 @@ class TableauRestApi:
             content = content_file.read()
 
             # If twb, create a TableauWorkbook object and check for any published data sources
-            if file_extension == 'twb':
+            if file_extension == 'twb' and check_published_ds is True:
                 if isinstance(content_filename, TableauWorkbook):
                     wb_obj = content_filename
                 else:
@@ -2124,19 +2125,24 @@ class TableauPackagedFile:
 
 # Meant to represent a TDS file, does not handle the file opening
 class TableauDatasource:
-    def __init__(self, datasource_string, logger_obj=None):
+    def __init__(self, datasource_string, logger_obj=None, translation_on=False):
         self.__logger = logger_obj
         self.ds = StringIO(datasource_string)
         self.start_xml = ""
         self.end_xml = ""
+        self.middle_xml = ""
+        self.columns_xml = ""
         self.ds_name = None
         self.connection = None
-
+        self.columns_obj = None
+        self.translate_flag = False
         if self.__logger is not None:
             self.enable_logging(self.__logger)
 
         # Find connection line and build TableauConnection object
         start_flag = True
+        columns_flag = False
+        aliases_flag = False
         for line in self.ds:
             # Grab the caption if coming from
             if line.find('<datasource ') != -1:
@@ -2149,6 +2155,7 @@ class TableauDatasource:
                     self.ds_name = xml_obj.attrib["caption"]
                 elif xml_obj.get("name"):
                     self.ds_name = xml_obj.attrib['name']
+
                 if start_flag is True:
                     self.start_xml += line
                 elif start_flag is False:
@@ -2160,10 +2167,30 @@ class TableauDatasource:
                 start_flag = False
                 continue
             else:
-                if start_flag is True:
+                # For columns object creation, the start at the first <column> and end after last </column>
+                if line.find("<aliases enabled='yes' />") != -1:
+                    aliases_flag = True
+                    self.middle_xml += line
+                    continue
+                if aliases_flag is True:
+                    if columns_flag is False and line.find('<column') != -1:
+                        columns_flag = True
+                    # columns can have calculation tags inside that defind a calc
+                    if columns_flag is True and line.find('column') == -1 and line.find('calculation') == -1:
+                        columns_flag = False
+                    if columns_flag is True:
+                        self.columns_xml += line
+                    elif start_flag is False and columns_flag is False:
+                        self.end_xml += line
+                elif start_flag is True:
                     self.start_xml += line
-                elif start_flag is False:
+                elif start_flag is False and aliases_flag is False:
+                    self.middle_xml += line
+                elif start_flag is False and aliases_flag is True:
                     self.end_xml += line
+
+        self.log(self.columns_xml)
+        self.columns_obj = TableauColumns(self.columns_xml, self.__logger)
 
     def enable_logging(self, logger_obj):
         if isinstance(logger_obj, Logger):
@@ -2181,6 +2208,11 @@ class TableauDatasource:
         # Parameters datasource section does not have a connection tag
         if self.connection is not None:
             xml += self.connection.get_xml_string()
+        xml += self.middle_xml
+        if self.translate_flag is True:
+            xml += self.columns_obj.get_xml_string()
+        else:
+            xml += self.columns_xml
         xml += self.end_xml
         return xml
 
@@ -2193,6 +2225,14 @@ class TableauDatasource:
             print "Error: File '" + filename + "' cannot be opened to write to"
             raise
 
+    def get_columns_obj(self):
+        return self.columns_obj
+
+    def translate_columns(self, translation_dict):
+        self.columns_obj.set_translation_dict(translation_dict)
+        self.columns_obj.translate_captions()
+        self.translate_flag = True
+        return self.columns_obj.get_xml_string()
 
 class TableauWorkbook:
     def __init__(self, wb_string, logger_obj=None):
@@ -2269,7 +2309,7 @@ class TableauConnection:
         if self.__logger is not None:
             self.enable_logging(self.__logger)
 
-        if connection_line.find("<connection "):
+        if connection_line.find("<connection ") != -1:
             self.log('Looking at: {}'.format(connection_line))
             # Add ending tag for XML parsing
             connection_line += "</connection>"
@@ -2289,32 +2329,32 @@ class TableauConnection:
             self.__logger.log(l)
 
     def set_dbname(self, new_db_name):
-        if self.xml_obj.attrib["dbname"] is not None:
+        if self.xml_obj.get("dbname") is not None:
             self.xml_obj.attrib["dbname"] = new_db_name
 
     def get_dbname(self):
-        return self.xml_obj.attrib["dbname"]
+        return self.xml_obj.get("dbname")
 
     def set_server(self, new_server):
-        if self.xml_obj.attrib["server"] is not None:
+        if self.xml_obj.get("server") is not None:
             self.xml_obj.attrib["server"] = new_server
 
     def get_server(self):
-        return self.xml_obj.attrib["server"]
+        return self.xml_obj.get("server")
 
     def set_username(self, new_username):
-        if self.xml_obj.attrib["username"] is not None:
+        if self.xml_obj.get("username") is not None:
             self.xml_obj.attrib["username"] = new_username
 
     def set_port(self, new_port):
-        if self.xml_obj.attrib["port"] is not None:
+        if self.xml_obj.get("port") is not None:
             self.xml_obj.attrib["port"] = new_port
 
     def get_port(self):
-        return self.xml_obj.attrib["port"]
+        return self.xml_obj.get("port")
 
     def get_connection_type(self):
-        return self.xml_obj.attrib['class']
+        return self.xml_obj.get('class')
 
     def get_xml_string(self):
         xml_with_ending_tag = etree.tostring(self.xml_obj)
@@ -2322,17 +2362,66 @@ class TableauConnection:
         return xml_with_ending_tag[0:xml_with_ending_tag.find('</connection>')]
 
     def is_published_datasource(self):
-        if self.xml_obj.attrib["class"] == 'sqlproxy':
+        if self.xml_obj.get("class") == 'sqlproxy':
             return True
         else:
             return False
 
     def is_windows_auth(self):
-        if self.xml_obj.attrib["authentication"] is not None:
-            if self.xml_obj.attrib["authentication"] == 'sspi':
+        if self.xml_obj.get("authentication") is not None:
+            if self.xml_obj.get("authentication") == 'sspi':
                 return True
             else:
                 return False
+
+class TableauColumns:
+    def __init__(self, column_lines, logger_obj=None):
+        self.__logger = logger_obj
+        self.__translation_dict = None
+        # Building from a <column> tag
+        self.xml_obj = None
+        self.columns_text = "<columns xmlns:user='http://www.tableausoftware.com/xml/user'>" + column_lines + "</columns>".strip()
+        self.log('Looking at: {}'.format(self.columns_text))
+        utf8_parser = etree.XMLParser(encoding='utf-8')
+        xml = etree.parse(StringIO(self.columns_text), parser=utf8_parser)
+        self.columns_obj = xml.getroot()
+        # xml = etree.fromstring(connection_line)
+
+    def enable_logging(self, logger_obj):
+        if isinstance(logger_obj, Logger):
+            self.__logger = logger_obj
+
+    def log(self, l):
+        if self.__logger is not None:
+            self.__logger.log(l)
+
+    def get_columns_obj(self):
+        return self.columns_obj
+
+    def set_translation_dict(self, trans_dict):
+        self.__translation_dict = trans_dict
+
+    def translate_captions(self):
+        for column in self.get_columns_obj():
+            if column.get('caption') is None:
+                trans = self.__find_translation(column.get('name'))
+            else:
+                # Try to match caption first, if not move to name
+                trans = self.__find_translation(column.get('caption'))
+                if trans is None:
+                    trans = self.__find_translation(column.get('name'))
+            if trans is not None:
+                column.set('caption', trans)
+
+    def __find_translation(self, match_str):
+        return self.__translation_dict.get(match_str)
+
+    def get_xml_string(self):
+        xml_with_extra_tags = etree.tostring(self.columns_obj, encoding='utf8')
+        # Slice off the extra connection ending tag
+        first_tag_place = len('<columns xmlns:user="http://www.tableausoftware.com/xml/user">') + 1
+        return xml_with_extra_tags[first_tag_place:xml_with_extra_tags.find('</columns>')-1]
+
 
 # Exceptions
 class NoMatchFoundException(Exception):
