@@ -28,6 +28,7 @@ class TableauRestApi:
         self.__password = password
         self.__token = None  # Holds the login token from the Sign In call
         self.__site_luid = ""
+        self.__user_luid = ""
         self.__login_as_user_id = None
         self.__last_error = None
         self.__logger = None
@@ -386,6 +387,7 @@ class TableauRestApi:
         self.__token = credentials_element[0].get("token")
         self.log("Token is " + self.__token)
         self.__site_luid = credentials_element[0].xpath("//t:site", namespaces=self.__ns_map)[0].get("id")
+        self.__user_luid = credentials_element[0].xpath("//t:user", namespaces=self.__ns_map)[0].get("id")
         self.log("Site ID is " + self.__site_luid)
 
     def signout(self):
@@ -688,10 +690,21 @@ class TableauRestApi:
 
     # This uses the logged in username
     def query_workbooks(self):
-        return self.query_workbooks_by_username(self.__username)
+        return self.query_workbooks_for_user_by_luid(self.__user_luid)
 
     def query_workbook_for_username_by_workbook_name(self, username, wb_name):
         workbooks = self.query_workbooks_by_username(username)
+        workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
+        if len(workbook) == 0:
+            raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
+        elif len(workbook) == 1:
+            wb_luid = workbook[0].get("id")
+            return self.query_workbook_by_luid(wb_luid)
+        else:
+            raise MultipleMatchesFound(len(workbook))
+
+    def query_workbook_for_user_luid_by_workbook_name(self, user_luid, wb_name):
+        workbooks = self.query_workbooks_for_user_by_luid(user_luid)
         workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
         if len(workbook) == 0:
             raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
@@ -716,7 +729,7 @@ class TableauRestApi:
 
     # Assume the current logged in user
     def query_workbook_by_name(self, wb_name):
-        return self.query_workbook_for_username_by_workbook_name(self.__username, wb_name)
+        return self.query_workbook_for_user_luid_by_workbook_name(self.__user_luid, wb_name)
 
     def query_workbook_luid_for_username_by_workbook_name(self, username, wb_name):
         workbooks = self.query_workbooks_by_username(username)
