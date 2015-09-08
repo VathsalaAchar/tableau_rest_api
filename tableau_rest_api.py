@@ -444,7 +444,7 @@ class TableauRestApi:
             return 1
         except RecoverableHTTPException as e:
             self.log('Non fatal HTTP Exception Response {}, Tableau Code {}'.format(e.http_code, e.tableau_error_code))
-            if e.tableau_error_code in [404003]:
+            if e.tableau_error_code in [404003, 404002]:
                 self.log('Delete action did not find the resouce. Consider successful, keep going')
         except:
             raise
@@ -707,7 +707,7 @@ class TableauRestApi:
         workbooks = self.query_workbooks_for_user_by_luid(user_luid)
         workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
         if len(workbook) == 0:
-            raise NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
+            raise NoMatchFoundException("No workbook found for user " + user_luid + " named " + wb_name)
         elif len(workbook) == 1:
             wb_luid = workbook[0].get("id")
             return self.query_workbook_by_luid(wb_luid)
@@ -788,7 +788,7 @@ class TableauRestApi:
     # Do not include file extension
     def save_workbook_view_preview_image_by_luid(self, wb_luid, view_luid, filename):
         # Check for workbook
-        self.query_workbook_by_luid(wb_luid)
+        # self.query_workbook_by_luid(wb_luid)
         # Open the file to be saved to
         try:
             save_file = open(filename + ".png", 'wb')
@@ -796,15 +796,18 @@ class TableauRestApi:
             image = self.send_binary_get_request(url)
             save_file.write(image)
             save_file.close()
-
+        # You might be requesting something that doesn't exist
+        except RecoverableHTTPException as e:
+            self.log("Attempt to request preview image results in HTTP error {}, Tableau Code {}".format(e.http_code, e.tableau_error_code))
+            raise
         except IOError:
-            print "Error: File '" + filename + "' cannot be opened to save to"
+            self.log("Error: File '" + filename + "' cannot be opened to save to")
             raise
 
     # Do not include file extension
     def save_workbook_preview_image(self, wb_luid, filename):
         # CHeck for workbook
-        self.query_workbook_by_luid(wb_luid)
+        # self.query_workbook_by_luid(wb_luid)
         # Open the file to be saved to
         try:
             save_file = open(filename + '.png', 'wb')
@@ -812,7 +815,10 @@ class TableauRestApi:
             image = self.send_binary_get_request(url)
             save_file.write(image)
             save_file.close()
-
+        # You might be requesting something that doesn't exist, but unlikely
+        except RecoverableHTTPException as e:
+            self.log("Attempt to request preview image results in HTTP error {}, Tableau Code {}".format(e.http_code, e.tableau_error_code))
+            raise
         except IOError:
             print "Error: File '" + filename + "' cannot be opened to save to"
             raise
@@ -820,7 +826,7 @@ class TableauRestApi:
     # Do not include file extension. Without filename, only returns the response
     def download_datasource_by_luid(self, ds_luid, filename=None):
         # Check ds existence
-        self.query_datasource_by_luid(ds_luid)
+        # self.query_datasource_by_luid(ds_luid)
         # Open the file to be saved to
         try:
             url = self.build_api_url("datasources/{}/content".format(ds_luid))
@@ -832,6 +838,9 @@ class TableauRestApi:
                 extension = '.tdsx'
             if extension is None:
                 raise IOError('File extension could not be determined')
+        except RecoverableHTTPException as e:
+            self.log("download_datasource_by_luid resulted in HTTP error {}, Tableau Code {}".format(e.http_code, e.tableau_error_code))
+            raise
         except:
             raise
         try:
@@ -861,7 +870,7 @@ class TableauRestApi:
     # Do not include file extension, added automatically. Without filename, only returns the response
     def download_workbook_by_luid(self, wb_luid, filename=None):
         # Check ds existence
-        self.query_workbook_by_luid(wb_luid)
+        # self.query_workbook_by_luid(wb_luid)
         # Open the file to be saved to
         try:
             url = self.build_api_url("workbooks/{}/content".format(wb_luid))
@@ -873,6 +882,9 @@ class TableauRestApi:
                 extension = '.twbx'
             if extension is None:
                 raise IOError('File extension could not be determined')
+        except RecoverableHTTPException as e:
+            self.log("download_workbook_by_luid resulted in HTTP error {}, Tableau Code {}".format(e.http_code, e.tableau_error_code))
+            raise
         except:
             raise
         try:
@@ -904,54 +916,65 @@ class TableauRestApi:
     # Create / Add Methods
     #
 
-    def add_user_by_username(self, username, site_role='Unlicensed'):
+    def add_user_by_username(self, username, site_role='Unlicensed', update_if_exists=False):
         # Check to make sure role that is passed is a valid role in the API
         try:
             self.__site_roles.index(site_role)
         except:
-            raise Exception(site_role + " is not a valid site role in Tableau Server")
-        # See if username already exists, if so, don't do anything
+            raise InvalidOptionException(site_role + " is not a valid site role in Tableau Server")
+
+        self.log("Adding " + username)
+        add_request = '<tsRequest><user name="{}" siteRole="{}" /></tsRequest>'.format(username, site_role)
+        self.log(add_request)
+        url = self.build_api_url('users')
+        self.log(url)
         try:
-            username_luid = self.query_user_luid_by_username(username)
-            self.log("Username " + username + " already exists on the server as " + username_luid)
-            raise AlreadyExistsException("Username " + username + " already exists on the server as " + username_luid,
-                                         username_luid)
-        # If there is no match, add the user
-        except NoMatchFoundException:
-            self.log("Adding " + username)
-            add_request = '<tsRequest><user name="{}" siteRole="{}" /></tsRequest>'.format(username, site_role)
-            self.log(add_request)
-            url = self.build_api_url('users')
-            self.log(url)
             new_user = self.send_add_request(url, add_request)
             new_user_luid = new_user.xpath('//t:user', namespaces=self.__ns_map)[0].get("id")
             return new_user_luid
+        # If already exists, update site role unless overridden.
+        except RecoverableHTTPException as e:
+            if e.http_code == 409:
+                self.log("Username '{}' already exists on the server".format(username))
+                if update_if_exists is True:
+                    self.log('Updating {} to site role {}'.format(username, site_role))
+                    self.update_user(username, site_role=site_role)
+                    return self.query_user_luid_by_username(username)
+                else:
+                    raise AlreadyExistsException('Username already exists ', self.query_user_luid_by_username(username))
         except:
             raise
 
-    # This is "Add User to Site", since you must be logged into a site
-    def add_user(self, username, fullname, site_role='Unlicensed', password=None, email=None):
+    # This is "Add User to Site", since you must be logged into a site.
+    # Set "update_if_exists" to True if you want the equivalent of an 'upsert', ignoring the exceptions
+    def add_user(self, username, fullname, site_role='Unlicensed', password=None, email=None, update_if_exists=False):
         # Add username first, then update with full name
         add_request = '<tsRequest><user name="{}" siteRole="{}" /></tsRequest>'.format(username, site_role)
         self.log(add_request)
         url = self.build_api_url('users')
         self.log(url)
         try:
-            new_user_luid = self.add_user_by_username(username)
+            new_user_luid = self.add_user_by_username(username, update_if_exists=update_if_exists)
             self.update_user_by_luid(new_user_luid, fullname, site_role, password, email)
             return new_user_luid
         except AlreadyExistsException as e:
-            self.log("Username " + username + " already exists on the server with luid " + e.existing_luid)
+            self.log("Username '{}' already exists on the server; no updates performed".format(username))
             return e.existing_luid
-            # return self.update_user(new_user_luid,fullname,password,email)
 
+    # Returns the LUID of an existing group if one already exists
     def create_group(self, group_name):
         add_request = '<tsRequest><group name="{}" /></tsRequest>'.format(group_name)
         self.log(add_request)
         url = self.build_api_url("groups")
         self.log(url)
-        new_group = self.send_add_request(url, add_request)
-        return new_group.xpath('//t:group', namespaces=self.__ns_map)[0].get("id")
+        try:
+            new_group = self.send_add_request(url, add_request)
+            return new_group.xpath('//t:group', namespaces=self.__ns_map)[0].get("id")
+        # If the name already exists, a HTTP 409 throws, so just find and return the existing LUID
+        except RecoverableHTTPException as e:
+            if e.http_code == 409:
+                self.log('Group named {} already exists, finding and returning the LUID'.format(group_name))
+                return self.query_group_luid_by_name(group_name)
 
     # Creating a synced ad group is completely different, use this method
     # The luid is only available in the Response header if bg sync. Nothing else is passed this way -- how to expose?
@@ -982,8 +1005,13 @@ class TableauRestApi:
         add_request += " /></tsRequest>"
         self.log(add_request)
         url = self.build_api_url("projects")
-        new_project = self.send_add_request(url, add_request)
-        return new_project.xpath('//t:project', namespaces=self.__ns_map)[0].get("id")
+        try:
+            new_project = self.send_add_request(url, add_request)
+            return new_project.xpath('//t:project', namespaces=self.__ns_map)[0].get("id")
+        except RecoverableHTTPException as e:
+            if e.http_code == 409:
+                self.log('Project named {} already exists, finding and returning the LUID'.format(project_name))
+                return self.query_project_luid_by_name(project_name)
 
     # Both SiteName and ContentUrl must be unique to add a site
     def create_site(self, new_site_name, new_content_url, admin_mode=None, user_quota=None, storage_quota=None,
@@ -1024,22 +1052,19 @@ class TableauRestApi:
             # Test for str vs. collection
             user_luids = self.to_list(user_luid_s)
             for user_luid in user_luids:
-                self.query_user_by_luid(user_luid)
                 add_request = '<tsRequest><user id="{}" /></tsRequest>'.format(user_luid)
                 self.log(add_request)
                 url = self.build_api_url("groups/{}/users/".format(group_luid))
                 self.log(url)
                 try:
                     self.send_add_request(url, add_request)
-                except:
-                    raise NoMatchFoundException("User {} does not exist on server".format(user_luid))
+                except RecoverableHTTPException as e:
+                    self.log("Recoverable HTTP exception {} with Tableau Error Code {}, skipping".format(str(e.http_code), e.tableau_error_code))
         else:
             self.log("Skipping add action to 'All Users' group")
 
     # Tags can be scalar string or list
     def add_tags_to_workbook_by_luid(self, wb_luid, tag_s):
-        # Check the wb_luid exists
-        self.query_workbook_by_luid(wb_luid)
         url = self.build_api_url("workbooks/{}/tags".format(wb_luid))
 
         request = "<tsRequest><tags>"
@@ -1050,18 +1075,12 @@ class TableauRestApi:
         return self.send_update_request(url, request)
 
     def add_workbook_to_user_favorites_by_luid(self, favorite_name, wb_luid, user_luid):
-        # Check existence of user
-        self.query_user_by_luid(user_luid)
-        self.query_workbook_by_luid(wb_luid)
         request = '<tsRequest><favorite label="{}"><workbook id="{}" />'.format(favorite_name, wb_luid)
         request += '</favorite></tsRequest>'
         url = self.build_api_url("favorites/{}".format(user_luid))
         return self.send_update_request(url, request)
 
     def add_view_to_user_favorites_by_luid(self, favorite_name, view_luid, user_luid):
-        # Check existence of user
-        self.query_user_by_luid(user_luid)
-        # self.query_views_by_luid(wb_luid) # Should figured out if view exists here
         request = '<tsRequest><favorite label="{}"><view id="{}" />'.format(favorite_name, view_luid)
         request += '</favorite></tsRequest>'
         url = self.build_api_url("favorites/{}".format(user_luid))
@@ -1116,8 +1135,6 @@ class TableauRestApi:
 
     def update_user_by_luid(self, user_luid, full_name=None, site_role=None, password=None,
                             email=None):
-        # Check if user_luid exists
-        self.query_user_by_luid(user_luid)
         update_request = "<tsRequest><user "
         if full_name is not None:
             update_request += 'fullName="{}" '.format(full_name)
@@ -1147,8 +1164,6 @@ class TableauRestApi:
 
     def update_datasource_by_luid(self, datasource_luid, new_datasource_name=None, new_project_luid=None,
                                   new_owner_luid=None):
-        # Check if datasource_luid exists
-        self.query_datasource_by_luid(datasource_luid)
         update_request = "<tsRequest><datasource"
         if new_datasource_name is not None:
             update_request = update_request + ' name="{}" '.format(new_datasource_name)
@@ -1177,8 +1192,7 @@ class TableauRestApi:
 
     def update_datasource_connection_by_luid(self, datasource_luid, new_server_address=None, new_server_port=None,
                                              new_connection_username=None, new_connection_password=None):
-        # Check if datasource_luid exists
-        self.query_datasource_by_luid(datasource_luid)
+
         update_request = self.__build_connection_update_xml(new_server_address, new_server_port,
                                                             new_connection_username,
                                                             new_connection_password)
@@ -1415,8 +1429,6 @@ class TableauRestApi:
     def delete_datasources_by_luid(self, datasource_luid_s):
         datasource_luids = self.to_list(datasource_luid_s)
         for datasource_luid in datasource_luids:
-            # Check if datasource_luid exists
-            self.query_datasource_by_luid(datasource_luid)
             url = self.build_api_url("datasources/{}".format(datasource_luid))
             self.log("Deleting datasource via  " + url)
             self.send_delete_request(url)
@@ -1424,8 +1436,6 @@ class TableauRestApi:
     def delete_projects_by_luid(self, project_luid_s):
         project_luids = self.to_list(project_luid_s)
         for project_luid in project_luids:
-            # Check if project_luid exists
-            self.query_project_by_luid(project_luid)
             url = self.build_api_url("projects/{}".format(project_luid))
             self.log("Deleting project via  " + url)
             self.send_delete_request(url)
@@ -1448,8 +1458,6 @@ class TableauRestApi:
 
     # Can take collection or luid_string
     def delete_workbooks_from_user_favorites_by_luid(self, wb_luid_s, user_luid):
-        # Check if users exist
-        self.query_user_by_luid(user_luid)
         wb_luids = self.to_list(wb_luid_s)
         for wb_luid in wb_luids:
             # Check if workbook_luid exists
@@ -1459,9 +1467,6 @@ class TableauRestApi:
             self.send_delete_request(url)
 
     def delete_views_from_user_favorites_by_luid(self, view_luid_s, user_luid):
-        # Check if users exist
-        self.query_user_by_luid(user_luid)
-
         view_luids = self.to_list(view_luid_s)
         for view_luid in view_luids:
             # Check if workbook_luid exists
@@ -1471,13 +1476,8 @@ class TableauRestApi:
 
     # Can take collection or string user_luid string
     def remove_users_from_group_by_luid(self, user_luid_s, group_luid):
-        # Check if group luids exist
-        self.query_group_by_luid(group_luid)
-
         user_luids = self.to_list(user_luid_s)
         for user_luid in user_luids:
-            # Check if user exists
-            self.query_user_by_luid(user_luid)
             url = self.build_api_url("groups/{}/users/{}".format(user_luid, group_luid))
             self.log("Removing user from group via DELETE on " + url)
             self.send_delete_request(url)
@@ -1486,8 +1486,6 @@ class TableauRestApi:
     def remove_users_from_site_by_luid(self, user_luid_s):
         user_luids = self.to_list(user_luid_s)
         for user_luid in user_luids:
-            # Check if user_luid exists
-            self.query_user_by_luid(user_luid)
             url = self.build_api_url("users/{}".format(user_luid))
             self.log("Removing user from site via DELETE on " + url)
             self.send_delete_request(url)
@@ -1774,6 +1772,7 @@ class RestXmlRequest:
         self.__http_verb = None
         self.__response_type = None
         self.__last_response_content_type = None
+        self.__luid_pattern = r"[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*"
 
         try:
             self.set_http_verb('get')
@@ -1889,12 +1888,22 @@ class RestXmlRequest:
             xml = etree.parse(StringIO(raw_error_response), parser=utf8_parser)
             tableau_error = xml.xpath('//t:error', namespaces=self.__ns_map)
             error_code = tableau_error[0].get('code')
+            tableau_detail = xml.xpath('//t:detail', namespaces=self.__ns_map)
+            detail_text = tableau_detail[0].text
+            detail_luid_match_obj = re.search(self.__luid_pattern, detail_text)
+            if detail_luid_match_obj:
+                detail_luid = detail_luid_match_obj.group(0)
+            else:
+                detail_luid = False
             self.log('Tableau REST API error code is: {}'.format(error_code))
-            if e.code in [400, 401, 402, 403, 404]:
+            # Everything that is not 400 can potentially be recovered from
+            if e.code in [401, 402, 403, 404, 405, 409]:
                 # If 'not exists' for a delete, recover and log
                 if self.__http_verb == 'delete':
                     self.log('Delete action attempted on non-exists, keep going')
-                    raise RecoverableHTTPException(e.code, error_code)
+                if e.code == 409:
+                    self.log('HTTP 409 error, most likely an already exists')
+                raise RecoverableHTTPException(e.code, error_code, detail_luid)
             raise
         except:
             raise
@@ -2461,9 +2470,10 @@ class InvalidOptionException(Exception):
 
 
 class RecoverableHTTPException(Exception):
-    def __init__(self, http_code, tableau_error_code):
+    def __init__(self, http_code, tableau_error_code, luid):
         self.http_code = http_code
         self.tableau_error_code = tableau_error_code
+        self.luid = luid
 
 
 class MultipleMatchesFound(Exception):
