@@ -1856,7 +1856,7 @@ class RestXmlRequest:
                 request.add_data("")
         if self.__http_verb == 'put':
             request.get_method = lambda: 'PUT'
-        if self.__token is not None:
+        if self.__token:# is not None:
             request.add_header('X-tableau-auth', self.__token)
         if self.__publish is True:
             request.add_header('Content-Type', 'multipart/mixed; boundary={}'.format(self.__boundary_string))
