@@ -41,4 +41,7 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+*.tdsx
+*.twb
+tab_api_test.py
 .idea/
