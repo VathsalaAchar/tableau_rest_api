@@ -247,6 +247,10 @@ try:
             print "Downloading TWB"
             tab_srv_3.download_workbook_by_luid(twb_luid, 'TWB Save')
 
+            print 'Downloading the same TWB by workbook name'
+            wb_name = 'TWB to Publish'
+            tab_srv_3.download_workbook_by_luid(tab_srv.query_workbook_luid_by_name(username, wb_name), 'TWB Save 2')
+
             print "Publishing a TDS"
             tds_luid = tab_srv_3.publish_datasource('TDS to Publish SS.tds', 'SS TDS', project_luid)
 

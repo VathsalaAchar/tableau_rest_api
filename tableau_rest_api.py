@@ -393,7 +393,7 @@ class TableauRestApi:
     def signout(self):
         url = self.build_api_url("auth/signout", login=True)
         self.log(url)
-        api = RestXmlRequest(url, False, self.__logger)
+        api = RestXmlRequest(url, self.__token, self.__logger)
         api.set_http_verb('post')
         api.request_from_api()
         self.log('Signed out successfully')
@@ -730,6 +730,14 @@ class TableauRestApi:
     # Assume the current logged in user
     def query_workbook_by_name(self, wb_name):
         return self.query_workbook_for_user_luid_by_workbook_name(self.__user_luid, wb_name)
+
+    def query_workbook_luid_by_name(self, username, wb_name):
+        workbooks = self.query_workbooks_by_username(username)
+        workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
+        if len(workbook) == 1:
+            wb_luid = workbook[0].get("id")
+            return wb_luid
+        return NoMatchFoundException("No workbook found for username " + username + " named " + wb_name)
 
     def query_workbook_luid_for_username_by_workbook_name(self, username, wb_name):
         workbooks = self.query_workbooks_by_username(username)
@@ -1856,7 +1864,7 @@ class RestXmlRequest:
                 request.add_data("")
         if self.__http_verb == 'put':
             request.get_method = lambda: 'PUT'
-        if self.__token:# is not None:
+        if self.__token:  # altered the condition to avoid passing in header during authentication
             request.add_header('X-tableau-auth', self.__token)
         if self.__publish is True:
             request.add_header('Content-Type', 'multipart/mixed; boundary={}'.format(self.__boundary_string))
@@ -2390,4 +2398,3 @@ class RecoverableHTTPException(Exception):
 class MultipleMatchesFound(Exception):
     def __init__(self, count):
         self.msg = 'Found {} matches for the request, something has the same name'.format(str(count))
-
