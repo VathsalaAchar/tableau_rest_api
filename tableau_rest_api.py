@@ -393,7 +393,7 @@ class TableauRestApi:
     def signout(self):
         url = self.build_api_url("auth/signout", login=True)
         self.log(url)
-        api = RestXmlRequest(url, False, self.__logger)
+        api = RestXmlRequest(url, self.__token, self.__logger)
         api.set_http_verb('post')
         api.request_from_api()
         self.log('Signed out successfully')
