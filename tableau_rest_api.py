@@ -1698,6 +1698,8 @@ class TableauRestApi:
                 else:
                     wb_obj = TableauWorkbook(content)
                 for ds in wb_obj.get_datasources().values():
+                    if ds.ds_name == 'Parameters':  # ignores the parameter datasource that cannot be published
+                        continue
                     if ds.connection.is_published_datasource():
                         pub_ds_name = ds.get_datasource_name()
                         self.log("Workbook contains published data source named {}".format(pub_ds_name))
