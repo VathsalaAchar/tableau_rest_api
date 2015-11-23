@@ -753,6 +753,16 @@ class TableauRestApi:
         return self.query_workbooks_for_user_by_luid(user_luid)
 
     # Used the logged in username
+    def query_workbook_luid_by_workbook_name(self, wb_name):
+        workbooks = self.query_workbooks_by_username(self.__username)
+        workbook = workbooks.xpath('//t:workbook[@name="{}"]'.format(wb_name), namespaces=self.__ns_map)
+        if len(workbook) == 1:
+            wb_luid = workbook[0].get("id")
+            return wb_luid
+        else:
+            raise NoMatchFoundException("No workbook found for username " + self.__username + " named " + wb_name)
+
+    # Used the logged in username
     def query_workbook_views_by_workbook_name(self, wb_name, usage=False):
         wb_luid = self.query_workbook_luid_for_username_by_workbook_name(self.__username, wb_name)
         return self.query_workbook_views_by_luid(wb_luid, usage)
