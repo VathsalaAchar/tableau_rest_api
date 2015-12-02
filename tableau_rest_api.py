@@ -1863,7 +1863,7 @@ class RestXmlRequest:
 
         # Logic to create correct request
         opener = urllib2.build_opener(urllib2.HTTPHandler)
-        request = urllib2.Request(url)
+        request = urllib2.Request(url.encode("utf-8"))
         if self.__http_verb == 'delete':
             request.get_method = lambda: 'DELETE'
 
